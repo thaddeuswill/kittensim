@@ -1,0 +1,586 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Kitten Tagger</title>
+<style>
+  :root {
+    --hud: #64c8ff;
+    --alert: #ff4a4a;
+    --warn: #ffc94a;
+    --dim: #8899aa;
+    --bg: #05080c;
+    --panel: rgba(100,200,255,.06);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--hud);
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 14px; }
+  main { max-width: 900px; margin: 0 auto; padding: max(12px, env(safe-area-inset-top)) 16px 40px; }
+  header { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 14px; }
+  h1 { margin: 0; font-size: clamp(18px, 5vw, 26px); letter-spacing: .12em; text-shadow: 0 0 10px var(--hud); }
+  a { color: var(--hud); }
+  section { margin-bottom: 16px; }
+  .panel { background: var(--panel); border: 1px solid rgba(100,200,255,.25); padding: 12px; }
+  .hint { opacity: .7; font-size: 12px; line-height: 1.5; margin: 6px 0 0; }
+
+  button, .file { font: inherit; font-size: 12px; color: var(--hud); background: rgba(5,8,12,.8);
+    border: 1px solid var(--hud); padding: 9px 13px; letter-spacing: .08em; text-transform: uppercase; cursor: pointer; display: inline-block; }
+  button:active { background: var(--hud); color: var(--bg); }
+  button:disabled { opacity: .4; cursor: default; }
+  button.primary { font-size: 15px; padding: 12px 22px; }
+  .file input { display: none; }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  select { font: inherit; color: var(--hud); background: var(--bg); border: 1px solid var(--hud); padding: 7px; }
+  textarea { width: 100%; min-height: 220px; font: inherit; font-size: 12px; line-height: 1.5;
+    color: var(--hud); background: var(--bg); border: 1px solid rgba(100,200,255,.4); padding: 8px; }
+  summary { cursor: pointer; letter-spacing: .08em; }
+
+  #banner { padding: 9px 12px; border: 1px solid currentColor; background: rgba(5,8,12,.72);
+    font-size: clamp(13px, 3.6vw, 18px); letter-spacing: .06em; text-transform: uppercase; text-shadow: 0 0 8px currentColor;
+    margin-bottom: 8px; min-height: 2.6em; }
+  #banner small { display: block; opacity: .7; font-size: .65em; }
+  #player { position: relative; margin: 0 auto; background: #000; }
+  #player video { display: block; width: 100%; height: 100%; }
+  #overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  #player::after { content: ""; position: absolute; inset: 0; pointer-events: none;
+    background: repeating-linear-gradient(to bottom, rgba(0,0,0,0) 0 2px, rgba(0,0,0,.22) 2px 3px); }
+
+  #progress { height: 6px; background: rgba(100,200,255,.15); margin-top: 8px; }
+  #progress div { height: 100%; width: 0; background: var(--hud); box-shadow: 0 0 8px var(--hud); }
+  #status { min-height: 1.5em; margin-top: 6px; color: var(--warn); font-size: 12px; }
+
+  #timeline { position: relative; height: 34px; margin-top: 10px; background: rgba(100,200,255,.08); cursor: pointer; touch-action: none; }
+  #timeline .seg { position: absolute; top: 0; bottom: 0; }
+  #playhead { position: absolute; top: -3px; bottom: -3px; width: 2px; background: #fff; box-shadow: 0 0 6px #fff; pointer-events: none; }
+  #legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 10px; font-size: 12px; }
+  #legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 6px; background: var(--c); vertical-align: -1px; }
+  #segments { margin-top: 12px; max-height: 40vh; overflow-y: auto; }
+  #segments button { display: flex; width: 100%; gap: 12px; text-align: left; text-transform: none; letter-spacing: 0;
+    border: 0; border-left: 3px solid var(--c); margin-bottom: 4px; background: var(--panel); }
+  #segments .t { opacity: .7; min-width: 8.5em; }
+  #segments .l { flex: 1; color: var(--c); }
+  #segments .p { opacity: .6; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>KITTEN TAGGER</h1>
+    <a href="cat_hud.html">Live HUD →</a>
+  </header>
+
+  <section id="setup" class="panel">
+    <div class="controls">
+      <label class="file">Choose video<input type="file" id="fileInput" accept="video/*"></label>
+      <label>Scan every
+        <select id="stepSelect">
+          <option value="0.25">0.25 s</option>
+          <option value="0.5" selected>0.5 s</option>
+          <option value="1">1 s</option>
+          <option value="2">2 s</option>
+        </select>
+      </label>
+      <button id="scanBtn" class="primary" disabled>▶ Tag video</button>
+      <button id="cancelBtn" hidden>Stop</button>
+    </div>
+    <p class="hint" id="fileName">No video chosen. Recordings from your camera roll work.</p>
+    <details>
+      <summary>What it knows (edit behaviors)</summary>
+      <p class="hint">One per line: <code>LABEL | what it looks like</code>. The description is what the AI matches against, so write it like a photo caption. Changes are saved on this device and used on the next scan.</p>
+      <textarea id="behaviors" spellcheck="false"></textarea>
+      <div class="controls"><button id="resetBehaviors">Reset to defaults</button></div>
+    </details>
+    <p class="hint">First scan downloads the vision models (about 160&nbsp;MB, cached after that). Everything runs on this device; the video never leaves it.</p>
+  </section>
+
+  <section id="viewer" hidden>
+    <div id="banner"><small>KITTEN TACTICAL OVERLAY // VIDEO ANALYSIS</small><span id="tag">--</span></div>
+    <div id="player">
+      <video id="video" playsinline muted preload="auto"></video>
+      <canvas id="overlay"></canvas>
+    </div>
+    <div id="progress"><div></div></div>
+    <div id="status"></div>
+  </section>
+
+  <section id="results" hidden>
+    <div id="timeline"><div id="playhead"></div></div>
+    <div id="legend"></div>
+    <div class="controls" style="margin-top:12px">
+      <button id="jsonBtn">Export JSON</button>
+      <button id="csvBtn">Export CSV</button>
+      <button id="vttBtn">Export subtitles (.vtt)</button>
+    </div>
+    <div id="segments"></div>
+  </section>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+<script type="module">
+import {
+  env, AutoTokenizer, AutoProcessor, CLIPTextModelWithProjection, CLIPVisionModelWithProjection, RawImage,
+} from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1/dist/transformers.min.js';
+
+// ---------------------------------------------------------------------------
+// BEHAVIORS: what the tagger already "knows". CLIP compares each video frame to
+// these descriptions, so no training is needed. Edit them in the page or here.
+// ---------------------------------------------------------------------------
+const DEFAULT_BEHAVIORS = `POUNCE PREP | a photo of a cat crouched low with its body flat to the ground, about to pounce
+ZOOMIES | a blurry photo of a cat running fast
+LOAF | a photo of a cat sitting in a loaf with its paws tucked under its body
+NAP | a photo of a cat sleeping curled up with its eyes closed
+GROOMING | a photo of a cat licking its fur, grooming itself
+PLAYING | a photo of a cat playing with a toy
+EATING | a photo of a cat eating food from a bowl
+VOID STARE | a photo of a cat sitting still and staring intently at something
+CURTAIN RECON | a photo of a cat climbing up curtains
+SENTRY | a photo of a cat sitting upright and alert`;
+
+const NO_CAT = { label: 'NO CAT', prompt: 'a photo of a room with no cat in it' };
+const UNSURE = 'UNSURE';
+
+const TUNING = {
+  clipModel: 'Xenova/clip-vit-base-patch32',
+  minScore: 0.35,          // COCO-SSD confidence needed to accept a "cat"
+  labels: ['cat', 'dog'],  // COCO-SSD sometimes calls small kittens "dog"
+  cropPad: 1.6,            // crop around the cat, with some room for context (bowl, curtains…)
+  minConfidence: 0.3,      // below this the sample is tagged UNSURE
+  smoothWindow: 1,         // average with this many samples either side
+  zoomSpeed: 2.0,          // body-lengths/sec between samples that forces ZOOMIES
+  alertLabels: /POUNCE|ATTACK/i,
+};
+
+const COLORS = ['#ff7ad9', '#ffc94a', '#7dffb0', '#b98bff', '#64fff0', '#ff9f5a', '#9fd3ff', '#d4ff6a', '#ff6a8d', '#c0a8ff'];
+const STORAGE_KEY = 'kittenTagger.behaviors.v1';
+
+// ---------------------------------------------------------------------------
+// Elements
+// ---------------------------------------------------------------------------
+const $ = id => document.getElementById(id);
+const video = $('video'), overlay = $('overlay'), octx = overlay.getContext('2d');
+const fileInput = $('fileInput'), scanBtn = $('scanBtn'), cancelBtn = $('cancelBtn');
+const behaviorsEl = $('behaviors'), statusEl = $('status'), progressEl = $('progress').firstElementChild;
+const tagEl = $('tag'), bannerEl = $('banner'), playerEl = $('player');
+
+function setStatus(text) { statusEl.textContent = text; }
+
+// ---------------------------------------------------------------------------
+// Behavior list (editable, saved on device)
+// ---------------------------------------------------------------------------
+try { behaviorsEl.value = localStorage.getItem(STORAGE_KEY) || DEFAULT_BEHAVIORS; }
+catch (e) { behaviorsEl.value = DEFAULT_BEHAVIORS; }
+behaviorsEl.addEventListener('input', () => { try { localStorage.setItem(STORAGE_KEY, behaviorsEl.value); } catch (e) {} });
+$('resetBehaviors').addEventListener('click', () => {
+  behaviorsEl.value = DEFAULT_BEHAVIORS;
+  try { localStorage.removeItem(STORAGE_KEY); } catch (e) {}
+});
+
+function parseBehaviors() {
+  const seen = new Set();
+  return behaviorsEl.value.split('\n').map(line => {
+    const [label, ...rest] = line.split('|');
+    return { label: (label || '').trim().toUpperCase(), prompt: rest.join('|').trim() };
+  }).filter(b => b.label && b.prompt && !seen.has(b.label) && seen.add(b.label));
+}
+
+// ---------------------------------------------------------------------------
+// Models: COCO-SSD finds the cat, CLIP decides what she's doing
+// ---------------------------------------------------------------------------
+let detector = null;
+const clip = { tokenizer: null, processor: null, text: null, vision: null };
+
+async function loadModels() {
+  if (detector && clip.vision) return;
+  env.allowLocalModels = false;
+  const files = {};
+  const progress_callback = p => {
+    if (p.status !== 'progress' || !p.total) return;
+    files[p.file] = p;
+    const loaded = Object.values(files).reduce((s, f) => s + f.loaded, 0);
+    const total = Object.values(files).reduce((s, f) => s + f.total, 0);
+    setStatus(`Downloading vision models… ${Math.round(loaded / 1e6)} / ${Math.round(total / 1e6)} MB (first time only)`);
+  };
+  const opts = { device: 'wasm', dtype: 'q8', progress_callback };
+  setStatus('Loading vision models…');
+  [detector, clip.tokenizer, clip.processor, clip.text, clip.vision] = await Promise.all([
+    detector || cocoSsd.load({ base: 'lite_mobilenet_v2' }),
+    AutoTokenizer.from_pretrained(TUNING.clipModel, { progress_callback }),
+    AutoProcessor.from_pretrained(TUNING.clipModel, { progress_callback }),
+    CLIPTextModelWithProjection.from_pretrained(TUNING.clipModel, opts),
+    CLIPVisionModelWithProjection.from_pretrained(TUNING.clipModel, opts),
+  ]);
+}
+
+function normalizeRows(data, rows, dim) {
+  const out = [];
+  for (let r = 0; r < rows; r++) {
+    const v = data.slice(r * dim, (r + 1) * dim);
+    const n = Math.hypot(...v) || 1;
+    out.push(v.map(x => x / n));
+  }
+  return out;
+}
+
+async function embedPrompts(prompts) {
+  const inputs = clip.tokenizer(prompts, { padding: true, truncation: true });
+  const { text_embeds } = await clip.text(inputs);
+  return normalizeRows(text_embeds.data, text_embeds.dims[0], text_embeds.dims[1]);
+}
+
+async function embedImage(canvas) {
+  const inputs = await clip.processor(RawImage.fromCanvas(canvas));
+  const { image_embeds } = await clip.vision(inputs);
+  return normalizeRows(image_embeds.data, 1, image_embeds.dims[1])[0];
+}
+
+// CLIP-style zero-shot: cosine similarity * 100, softmax over the candidates
+function scoreAgainst(imageVec, textVecs) {
+  const logits = textVecs.map(t => 100 * t.reduce((s, x, i) => s + x * imageVec[i], 0));
+  const max = Math.max(...logits);
+  const exps = logits.map(l => Math.exp(l - max));
+  const sum = exps.reduce((a, b) => a + b, 0);
+  return exps.map(e => e / sum);
+}
+
+// ---------------------------------------------------------------------------
+// Frame grabbing
+// ---------------------------------------------------------------------------
+const frame = document.createElement('canvas');
+const fctx = frame.getContext('2d', { willReadFrequently: true });
+const square = document.createElement('canvas');
+square.width = square.height = 224;
+const sctx = square.getContext('2d', { willReadFrequently: true });
+
+function grabFrame() {
+  const scale = Math.min(1, 640 / Math.max(video.videoWidth, video.videoHeight));
+  frame.width = Math.round(video.videoWidth * scale);
+  frame.height = Math.round(video.videoHeight * scale);
+  fctx.drawImage(video, 0, 0, frame.width, frame.height);
+}
+
+// Square crop around the cat, or the whole frame letterboxed when there's no cat
+function squareFrom(box) {
+  const side = box ? Math.max(box.w, box.h) * TUNING.cropPad : Math.max(frame.width, frame.height);
+  const cx = box ? box.x + box.w / 2 : frame.width / 2;
+  const cy = box ? box.y + box.h / 2 : frame.height / 2;
+  const sx = cx - side / 2, sy = cy - side / 2, k = 224 / side;
+  const x0 = Math.max(0, sx), y0 = Math.max(0, sy);
+  const x1 = Math.min(frame.width, sx + side), y1 = Math.min(frame.height, sy + side);
+  sctx.fillStyle = '#000';
+  sctx.fillRect(0, 0, 224, 224);
+  sctx.drawImage(frame, x0, y0, x1 - x0, y1 - y0, (x0 - sx) * k, (y0 - sy) * k, (x1 - x0) * k, (y1 - y0) * k);
+  return square;
+}
+
+function pickCat(predictions) {
+  return predictions
+    .filter(p => TUNING.labels.includes(p.class) && p.score >= TUNING.minScore)
+    .sort((a, b) => (b.class === 'cat') - (a.class === 'cat') || b.score - a.score)[0];
+}
+
+function seekTo(t) {
+  if (video.currentTime === t && video.readyState >= 2) return Promise.resolve();
+  return new Promise(resolve => {
+    const done = () => { clearTimeout(timer); video.removeEventListener('seeked', done); resolve(); };
+    const timer = setTimeout(done, 3000);
+    video.addEventListener('seeked', done);
+    video.currentTime = t;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Scan
+// ---------------------------------------------------------------------------
+let fileUrl = null, fileName = '';
+let result = null;    // { behaviors, step, duration, samples, segments }
+let cancelled = false;
+let scanBehaviors = [];
+
+fileInput.addEventListener('change', () => {
+  const file = fileInput.files[0];
+  if (!file) return;
+  if (fileUrl) URL.revokeObjectURL(fileUrl);
+  fileUrl = URL.createObjectURL(file);
+  fileName = file.name;
+  $('fileName').textContent = `Loaded: ${file.name}`;
+  video.src = fileUrl;
+  video.controls = true;
+  result = null;
+  $('results').hidden = true;
+  $('viewer').hidden = false;
+  showTag(null);
+  video.addEventListener('loadedmetadata', fitPlayer, { once: true });
+  scanBtn.disabled = false;
+});
+
+scanBtn.addEventListener('click', async () => {
+  const behaviors = parseBehaviors();
+  if (behaviors.length < 2) return setStatus('Add at least 2 behaviors to tag with.');
+  scanBtn.disabled = true;
+  cancelBtn.hidden = false;
+  cancelled = false;
+  $('results').hidden = true;
+  result = null;
+  try { await video.play(); } catch (e) {}  // iOS won't hand over frames until the video has played once
+  video.pause();
+  video.controls = false;
+  let wakeLock = null;
+  try { wakeLock = await navigator.wakeLock?.request('screen'); } catch (e) {}
+
+  try {
+    await loadModels();
+    setStatus('Reading behaviors…');
+    const all = scanBehaviors = [...behaviors, NO_CAT];
+    const textVecs = await embedPrompts(all.map(b => b.prompt));
+    const step = parseFloat($('stepSelect').value);
+    const duration = video.duration;
+    const samples = [];
+
+    for (let t = 0; t < duration && !cancelled; t += step) {
+      await seekTo(t);
+      grabFrame();
+      const cat = pickCat(await detector.detect(frame, 6, 0.2));
+      const box = cat && { x: cat.bbox[0], y: cat.bbox[1], w: cat.bbox[2], h: cat.bbox[3] };
+      const vec = await embedImage(squareFrom(box));
+      // If the detector found her, "no cat" isn't an option; otherwise let CLIP decide
+      const candidates = box ? textVecs.slice(0, -1) : textVecs;
+      const probs = scoreAgainst(vec, candidates);
+      if (box) probs.push(0);
+      samples.push({
+        t,
+        box: box && { x: box.x / frame.width, y: box.y / frame.height, w: box.w / frame.width, h: box.h / frame.height },
+        catScore: cat ? cat.score : 0,
+        probs,
+      });
+      const guess = tagSample(all, samples, samples.length - 1);
+      drawOverlay(samples.at(-1), guess);
+      showTag(guess, `scanning ${fmt(t)} / ${fmt(duration)}`);
+      progressEl.style.width = `${(100 * Math.min(t + step, duration)) / duration}%`;
+      setStatus(`Tagging… ${samples.length} frames checked`);
+    }
+
+    result = buildResult(all, step, duration, samples);
+    setStatus(cancelled ? `Stopped early. Tagged the first ${fmt(samples.at(-1)?.t || 0)}.` :
+      `Done. ${result.segments.length} segments tagged. Tap the timeline or a segment to jump there.`);
+    renderResults();
+  } catch (err) {
+    console.error(err);
+    setStatus(`Error: ${err.message || err}`);
+  } finally {
+    wakeLock?.release?.().catch(() => {});
+    scanBtn.disabled = false;
+    cancelBtn.hidden = true;
+    video.controls = true;
+  }
+});
+
+cancelBtn.addEventListener('click', () => { cancelled = true; });
+
+// ---------------------------------------------------------------------------
+// Turning raw scores into tags and segments
+// ---------------------------------------------------------------------------
+function speedAt(samples, i) {
+  const a = samples[i - 1], b = samples[i];
+  if (!a || !a.box || !b.box) return 0;
+  const aspect = video.videoWidth / video.videoHeight;  // boxes are normalized; compare in real proportions
+  const dx = (b.box.x + b.box.w / 2 - a.box.x - a.box.w / 2) * aspect;
+  const dy = b.box.y + b.box.h / 2 - a.box.y - a.box.h / 2;
+  const size = Math.max(b.box.w * aspect, b.box.h);
+  return Math.hypot(dx, dy) / size / (b.t - a.t);
+}
+
+function tagSample(all, samples, i) {
+  const lo = Math.max(0, i - TUNING.smoothWindow), hi = Math.min(samples.length - 1, i + TUNING.smoothWindow);
+  const avg = all.map((_, k) => {
+    let s = 0;
+    for (let j = lo; j <= hi; j++) s += samples[j].probs[k];
+    return s / (hi - lo + 1);
+  });
+  let best = 0;
+  avg.forEach((p, k) => { if (p > avg[best]) best = k; });
+  const zoomIdx = all.findIndex(b => b.label === 'ZOOMIES');
+  if (zoomIdx >= 0 && speedAt(samples, i) > TUNING.zoomSpeed) {
+    return { label: 'ZOOMIES', conf: Math.max(avg[zoomIdx], 0.9), source: 'motion' };
+  }
+  if (avg[best] < TUNING.minConfidence) return { label: UNSURE, conf: avg[best] };
+  return { label: all[best].label, conf: avg[best] };
+}
+
+function buildResult(all, step, duration, samples) {
+  samples.forEach((s, i) => Object.assign(s, { tag: tagSample(all, samples, i) }));
+  const segments = [];
+  for (const s of samples) {
+    const last = segments.at(-1);
+    if (last && last.label === s.tag.label) {
+      last.end = s.t + step;
+      last.confs.push(s.tag.conf);
+    } else {
+      segments.push({ label: s.tag.label, start: s.t, end: s.t + step, confs: [s.tag.conf] });
+    }
+  }
+  for (const seg of segments) {
+    seg.end = Math.min(seg.end, duration);
+    seg.conf = seg.confs.reduce((a, b) => a + b, 0) / seg.confs.length;
+    delete seg.confs;
+  }
+  return { video: fileName, duration, step, behaviors: all, samples, segments };
+}
+
+// ---------------------------------------------------------------------------
+// Display
+// ---------------------------------------------------------------------------
+function colorFor(label) {
+  if (label === NO_CAT.label) return '#55606c';
+  if (label === UNSURE) return '#2c3a48';
+  if (TUNING.alertLabels.test(label)) return '#ff4a4a';
+  const labels = (result ? result.behaviors : scanBehaviors).map(b => b.label);
+  const i = Math.max(0, labels.indexOf(label));
+  return COLORS[i % COLORS.length];
+}
+
+function fmt(t) {
+  const m = Math.floor(t / 60), s = t - m * 60;
+  return `${m}:${s.toFixed(1).padStart(4, '0')}`;
+}
+
+function showTag(tag, sub) {
+  if (!tag) { tagEl.textContent = '--'; bannerEl.style.color = 'var(--hud)'; return; }
+  tagEl.textContent = `${tag.label}${tag.label === NO_CAT.label ? '' : ` // ${Math.round(tag.conf * 100)}%`}${sub ? `  ·  ${sub}` : ''}`;
+  bannerEl.style.color = tag.label === UNSURE || tag.label === NO_CAT.label ? 'var(--dim)' : colorFor(tag.label);
+}
+
+function fitPlayer() {
+  const ar = video.videoWidth / video.videoHeight || 16 / 9;
+  const maxH = window.innerHeight * 0.6;
+  playerEl.style.width = `${Math.min(playerEl.parentElement.clientWidth, maxH * ar)}px`;
+  playerEl.style.aspectRatio = `${ar}`;
+}
+window.addEventListener('resize', () => video.videoWidth && fitPlayer());
+
+function drawOverlay(sample, tag) {
+  const dpr = window.devicePixelRatio || 1;
+  const W = overlay.clientWidth * dpr, H = overlay.clientHeight * dpr;
+  if (overlay.width !== W || overlay.height !== H) { overlay.width = W; overlay.height = H; }
+  octx.clearRect(0, 0, W, H);
+  if (!sample || !sample.box || !tag) return;
+  const color = colorFor(tag.label);
+  const x = sample.box.x * W, y = sample.box.y * H, w = sample.box.w * W, h = sample.box.h * H;
+  const c = Math.min(w, h) * 0.22, s = 2 * dpr;
+  octx.strokeStyle = color;
+  octx.lineWidth = s;
+  octx.shadowColor = color;
+  octx.shadowBlur = 8;
+  octx.beginPath();
+  [[x, y, 1, 1], [x + w, y, -1, 1], [x, y + h, 1, -1], [x + w, y + h, -1, -1]].forEach(([px, py, dx, dy]) => {
+    octx.moveTo(px + c * dx, py); octx.lineTo(px, py); octx.lineTo(px, py + c * dy);
+  });
+  octx.stroke();
+  octx.shadowBlur = 0;
+  octx.fillStyle = color;
+  octx.font = `${Math.round(11 * dpr)}px ui-monospace, monospace`;
+  octx.fillText(tag.label, x, Math.max(14 * dpr, y - 6 * dpr));
+}
+
+function renderResults() {
+  if (!result || !result.samples.length) return;
+  $('results').hidden = false;
+  const tl = $('timeline');
+  tl.querySelectorAll('.seg').forEach(n => n.remove());
+  const totals = {};
+  for (const seg of result.segments) {
+    const d = document.createElement('div');
+    d.className = 'seg';
+    d.style.left = `${(100 * seg.start) / result.duration}%`;
+    d.style.width = `${(100 * (seg.end - seg.start)) / result.duration}%`;
+    d.style.background = colorFor(seg.label);
+    d.title = `${seg.label} ${fmt(seg.start)}–${fmt(seg.end)}`;
+    tl.insertBefore(d, $('playhead'));
+    const tot = totals[seg.label] || (totals[seg.label] = { time: 0, count: 0 });
+    tot.time += seg.end - seg.start;
+    tot.count++;
+  }
+  $('legend').innerHTML = '';
+  Object.entries(totals).sort((a, b) => b[1].time - a[1].time).forEach(([label, tot]) => {
+    const span = document.createElement('span');
+    span.style.setProperty('--c', colorFor(label));
+    span.textContent = `${label} ${fmt(tot.time)} · ${tot.count}×`;
+    $('legend').appendChild(span);
+  });
+  const list = $('segments');
+  list.innerHTML = '';
+  for (const seg of result.segments) {
+    if (seg.label === UNSURE) continue;
+    const b = document.createElement('button');
+    b.style.setProperty('--c', colorFor(seg.label));
+    b.innerHTML = '<span class="t"></span><span class="l"></span><span class="p"></span>';
+    b.querySelector('.t').textContent = `${fmt(seg.start)}–${fmt(seg.end)}`;
+    b.querySelector('.l').textContent = seg.label;
+    b.querySelector('.p').textContent = seg.label === NO_CAT.label ? '' : `${Math.round(seg.conf * 100)}%`;
+    b.addEventListener('click', () => { video.currentTime = seg.start; video.play().catch(() => {}); });
+    list.appendChild(b);
+  }
+}
+
+function seekFromTimeline(e) {
+  if (!result) return;
+  const r = $('timeline').getBoundingClientRect();
+  video.currentTime = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * result.duration;
+}
+$('timeline').addEventListener('pointerdown', e => {
+  seekFromTimeline(e);
+  const move = ev => seekFromTimeline(ev);
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', () => window.removeEventListener('pointermove', move), { once: true });
+});
+
+// Playback: show the tag for wherever the video is
+function playbackLoop() {
+  if (result && !scanBtn.disabled) {
+    const t = video.currentTime;
+    const seg = result.segments.find(s => t >= s.start && t < s.end) || result.segments.at(-1);
+    let nearest = result.samples[0];
+    for (const s of result.samples) if (Math.abs(s.t - t) < Math.abs(nearest.t - t)) nearest = s;
+    showTag(seg, null);
+    drawOverlay(nearest, seg);
+    $('playhead').style.left = `${(100 * t) / result.duration}%`;
+  }
+  requestAnimationFrame(playbackLoop);
+}
+requestAnimationFrame(playbackLoop);
+
+// ---------------------------------------------------------------------------
+// Exports
+// ---------------------------------------------------------------------------
+function download(name, text, type) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type }));
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+const baseName = () => (result.video || 'kitten').replace(/\.[^.]+$/, '');
+const vttTime = t => {
+  const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = t % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${s.toFixed(3).padStart(6, '0')}`;
+};
+
+$('jsonBtn').addEventListener('click', () => {
+  const samples = result.samples.map(s => ({ t: s.t, box: s.box, tag: s.tag.label, conf: +s.tag.conf.toFixed(3) }));
+  download(`${baseName()}-tags.json`, JSON.stringify({ ...result, samples }, null, 2), 'application/json');
+});
+$('csvBtn').addEventListener('click', () => {
+  const rows = ['start_s,end_s,label,confidence', ...result.segments.map(s =>
+    `${s.start.toFixed(2)},${s.end.toFixed(2)},"${s.label.replace(/"/g, '""')}",${s.conf.toFixed(3)}`)];
+  download(`${baseName()}-tags.csv`, rows.join('\n'), 'text/csv');
+});
+$('vttBtn').addEventListener('click', () => {
+  const cues = result.segments.filter(s => s.label !== UNSURE).map(s =>
+    `${vttTime(s.start)} --> ${vttTime(s.end)}\n${s.label}${s.label === NO_CAT.label ? '' : ` (${Math.round(s.conf * 100)}%)`}`);
+  download(`${baseName()}.vtt`, `WEBVTT\n\n${cues.join('\n\n')}\n`, 'text/vtt');
+});
+</script>
+</body>
+</html>
