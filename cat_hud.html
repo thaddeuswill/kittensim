@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Kitten HUD</title>
+<style>
+  :root {
+    --hud: #64c8ff;
+    --alert: #ff4a4a;
+    --warn: #ffc94a;
+    --bg: #05080c;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--hud); overflow: hidden;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+
+  #stage { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+  #view { max-width: 100%; max-height: 100%; width: 100%; height: 100%; object-fit: contain; }
+  video { display: none; }
+
+  /* scanlines + vignette */
+  #fx { position: fixed; inset: 0; pointer-events: none;
+    background:
+      repeating-linear-gradient(to bottom, rgba(0,0,0,0) 0 2px, rgba(0,0,0,.28) 2px 3px),
+      radial-gradient(ellipse at center, rgba(0,0,0,0) 55%, rgba(0,0,0,.65) 100%); }
+  body.alert #fx { box-shadow: inset 0 0 0 4px var(--alert), inset 0 0 60px rgba(255,74,74,.45);
+    animation: pulse .5s steps(2) infinite; }
+  @keyframes pulse { 50% { box-shadow: inset 0 0 0 4px transparent, inset 0 0 20px rgba(255,74,74,.2); } }
+
+  #banner { position: fixed; top: max(12px, env(safe-area-inset-top)); left: 16px; right: 16px;
+    padding: 10px 14px; border: 1px solid currentColor; background: rgba(5,8,12,.72);
+    font-size: clamp(13px, 3.6vw, 20px); letter-spacing: .06em; text-transform: uppercase;
+    text-shadow: 0 0 8px currentColor; }
+  #banner small { display: block; opacity: .7; font-size: .65em; margin-bottom: 4px; }
+
+  #stats { position: fixed; left: 16px; bottom: max(16px, env(safe-area-inset-bottom));
+    padding: 8px 12px; background: rgba(5,8,12,.72); border-left: 2px solid var(--hud);
+    font-size: 12px; line-height: 1.6; white-space: pre; }
+
+  #controls { position: fixed; right: 16px; bottom: max(16px, env(safe-area-inset-bottom));
+    display: flex; flex-direction: column; gap: 8px; }
+  button { font: inherit; font-size: 12px; color: var(--hud); background: rgba(5,8,12,.8);
+    border: 1px solid var(--hud); padding: 8px 12px; letter-spacing: .08em; text-transform: uppercase; cursor: pointer; }
+  button:active { background: var(--hud); color: var(--bg); }
+
+  #boot { position: fixed; inset: 0; display: flex; flex-direction: column; gap: 18px;
+    align-items: center; justify-content: center; text-align: center; padding: 16px; background: var(--bg); z-index: 5; }
+  #boot h1 { margin: 0; font-size: clamp(22px, 7vw, 40px); letter-spacing: .12em; text-shadow: 0 0 12px var(--hud); }
+  #boot p { margin: 0; max-width: 34em; opacity: .75; font-size: 13px; line-height: 1.5; }
+  #boot button { font-size: 16px; padding: 14px 28px; }
+  #bootMsg { min-height: 1.5em; color: var(--warn); }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="view"></canvas></div>
+<video id="webcam" playsinline muted autoplay></video>
+<div id="fx"></div>
+
+<div id="banner"><small>KITTEN TACTICAL OVERLAY v0.1</small><span id="intent">Booting…</span></div>
+<div id="stats"></div>
+<div id="controls">
+  <button id="flipBtn">Flip cam</button>
+  <button id="soundBtn">Sound: on</button>
+</div>
+
+<div id="boot">
+  <h1>KITTEN HUD</h1>
+  <p>Point the camera at the kitten. Needs HTTPS or localhost for camera access. The first load downloads about 5&nbsp;MB of model weights.</p>
+  <button id="startBtn">▶ Play</button>
+  <div id="bootMsg"></div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+<script>
+// ---------------------------------------------------------------------------
+// TRIGGERS: edit these strings/colors/thresholds to customise the HUD.
+// Thresholds are relative to the cat's own size, so they work at any distance.
+// ---------------------------------------------------------------------------
+const TRIGGERS = {
+  pounce: { text: 'WARNING: REAR-END CALIBRATION (POUNCE IMMINENT)', color: '#ff4a4a', alert: true },
+  zoomies: { text: 'ALERT: ZOOMIES PROTOCOL ENGAGED', color: '#ffc94a', alert: true },
+  sentry: { text: 'Status: Sentry mode / Judging you', color: '#b98bff' },
+  loaf: { text: 'Status: Loaf configuration achieved. Do not disturb.', color: '#7dffb0' },
+  idle: { text: 'Status: Idle / Plotting minor chaos', color: '#64c8ff' },
+  lost: { text: 'TARGET LOST: Check under the couch', color: '#8899aa' },
+  scanning: { text: 'Observing room status...', color: '#64c8ff' },
+};
+
+const TUNING = {
+  minScore: 0.35,        // detector confidence needed to accept a "cat"
+  labels: ['cat', 'dog'],// COCO-SSD sometimes calls small kittens "dog"
+  crouchRatio: 0.78,     // box height vs her recent normal height; below this = crouched
+  crouchAspect: 1.35,    // box width/height; above this = long and low
+  stalkSpeed: 0.35,      // body-lengths/sec; slower than this while crouched = stalking freeze
+  stalkHoldMs: 350,      // freeze must last this long before the pounce warning fires
+  zoomSpeed: 2.2,        // body-lengths/sec; faster = zoomies
+  loafSpeed: 0.06,       // basically motionless
+  loafHoldMs: 8000,      // motionless this long = loaf
+  sentryAspect: 0.85,    // taller than wide = sitting upright
+  lostAfterMs: 1500,
+  baselineWindowMs: 6000,
+};
+
+// ---------------------------------------------------------------------------
+// Camera
+// ---------------------------------------------------------------------------
+const video = document.getElementById('webcam');
+const canvas = document.getElementById('view');
+const ctx = canvas.getContext('2d');
+let facingMode = 'environment';
+
+async function setupCamera() {
+  if (video.srcObject) video.srcObject.getTracks().forEach(t => t.stop());
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: false,
+    video: { facingMode, width: { ideal: 1280 }, height: { ideal: 720 } },
+  });
+  video.srcObject = stream;
+  await new Promise(resolve => {
+    if (video.readyState >= 1) return resolve();
+    video.onloadedmetadata = () => resolve();
+  });
+  await video.play();
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+}
+
+// ---------------------------------------------------------------------------
+// Tracking state: a short history of the cat's box, used by the intent engine
+// ---------------------------------------------------------------------------
+const track = {
+  history: [],      // { t, cx, cy, w, h, score }
+  lastSeen: 0,
+  stillSince: 0,
+  crouchSince: 0,
+};
+
+function pickCat(predictions) {
+  return predictions
+    .filter(p => TUNING.labels.includes(p.class) && p.score >= TUNING.minScore)
+    .sort((a, b) => (b.class === 'cat') - (a.class === 'cat') || b.score - a.score)[0];
+}
+
+function updateTrack(cat, now) {
+  if (!cat) return;
+  const [x, y, w, h] = cat.bbox;
+  track.history.push({ t: now, cx: x + w / 2, cy: y + h / 2, w, h, score: cat.score });
+  track.lastSeen = now;
+  const cutoff = now - TUNING.baselineWindowMs;
+  while (track.history.length && track.history[0].t < cutoff) track.history.shift();
+}
+
+// Derive the numbers the rules care about from the recent box history.
+function measure(now) {
+  const H = track.history;
+  const cur = H[H.length - 1];
+  if (!cur) return null;
+
+  // Speed over the last ~300ms, in body lengths per second
+  let speed = 0;
+  const past = H.find(p => p.t >= now - 300) || cur;
+  const dt = (cur.t - past.t) / 1000;
+  if (dt > 0.05) {
+    const dist = Math.hypot(cur.cx - past.cx, cur.cy - past.cy);
+    speed = dist / Math.max(cur.w, cur.h) / dt;
+  }
+
+  // Her "normal" height: 75th percentile of recent heights, so a crouch stands out
+  const heights = H.map(p => p.h).sort((a, b) => a - b);
+  const baselineH = heights[Math.floor(heights.length * 0.75)] || cur.h;
+
+  return {
+    speed,
+    aspect: cur.w / cur.h,
+    crouch: cur.h / baselineH,
+    score: cur.score,
+    box: cur,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The rule-based intent engine
+// ---------------------------------------------------------------------------
+function analyzeKittenIntent(m, now) {
+  if (!track.lastSeen) return TRIGGERS.scanning;
+  if (now - track.lastSeen > TUNING.lostAfterMs || !m) return TRIGGERS.lost;
+
+  const still = m.speed < TUNING.loafSpeed;
+  if (!still) track.stillSince = 0;
+  else if (!track.stillSince) track.stillSince = now;
+
+  const crouched = m.crouch < TUNING.crouchRatio || m.aspect > TUNING.crouchAspect;
+  const stalking = crouched && m.speed < TUNING.stalkSpeed;
+  if (!stalking) track.crouchSince = 0;
+  else if (!track.crouchSince) track.crouchSince = now;
+
+  if (m.speed > TUNING.zoomSpeed) return TRIGGERS.zoomies;
+  if (track.crouchSince && now - track.crouchSince > TUNING.stalkHoldMs) return TRIGGERS.pounce;
+  if (track.stillSince && now - track.stillSince > TUNING.loafHoldMs) return TRIGGERS.loaf;
+  if (m.aspect < TUNING.sentryAspect) return TRIGGERS.sentry;
+  return TRIGGERS.idle;
+}
+
+// ---------------------------------------------------------------------------
+// HUD rendering
+// ---------------------------------------------------------------------------
+const intentEl = document.getElementById('intent');
+const bannerEl = document.getElementById('banner');
+const statsEl = document.getElementById('stats');
+let lastIntent = null;
+
+function updateHUDOverlay(intent, m, fps) {
+  if (intent !== lastIntent) {
+    intentEl.textContent = intent.text;
+    bannerEl.style.color = intent.color;
+    document.body.classList.toggle('alert', !!intent.alert);
+    if (intent.alert) beep(intent === TRIGGERS.pounce ? 880 : 520);
+    lastIntent = intent;
+  }
+  const f = (v, d = 2) => (v == null ? '--' : v.toFixed(d));
+  statsEl.textContent =
+    `TGT LOCK  ${m ? 'YES' : 'NO'}\n` +
+    `CONF      ${m ? Math.round(m.score * 100) + '%' : '--'}\n` +
+    `SPEED     ${f(m && m.speed)} bl/s\n` +
+    `CROUCH    ${f(m && m.crouch)}\n` +
+    `ASPECT    ${f(m && m.aspect)}\n` +
+    `FPS       ${f(fps, 0)}`;
+}
+
+function drawFrame(m, intent) {
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  if (!m || intent === TRIGGERS.lost) return;
+
+  const { cx, cy, w, h } = m.box;
+  const x = cx - w / 2, y = cy - h / 2;
+  const s = Math.max(2, canvas.width / 400);
+  const c = Math.min(w, h) * 0.22;
+  ctx.strokeStyle = intent.color;
+  ctx.lineWidth = s * 1.5;
+  ctx.shadowColor = intent.color;
+  ctx.shadowBlur = 10;
+  ctx.beginPath();
+  // corner brackets
+  [[x, y, 1, 1], [x + w, y, -1, 1], [x, y + h, 1, -1], [x + w, y + h, -1, -1]].forEach(([px, py, dx, dy]) => {
+    ctx.moveTo(px + c * dx, py); ctx.lineTo(px, py); ctx.lineTo(px, py + c * dy);
+  });
+  // centre crosshair
+  ctx.moveTo(cx - c / 2, cy); ctx.lineTo(cx + c / 2, cy);
+  ctx.moveTo(cx, cy - c / 2); ctx.lineTo(cx, cy + c / 2);
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  ctx.fillStyle = intent.color;
+  ctx.font = `${Math.round(s * 7)}px ui-monospace, monospace`;
+  ctx.fillText(`KITTEN // ${Math.round(m.score * 100)}%`, x, Math.max(s * 8, y - s * 4));
+}
+
+// ---------------------------------------------------------------------------
+// Sound
+// ---------------------------------------------------------------------------
+let audioCtx = null;
+let soundOn = true;
+function beep(freq) {
+  if (!soundOn || !audioCtx) return;
+  const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+  o.type = 'square'; o.frequency.value = freq;
+  g.gain.setValueAtTime(0.08, audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.25);
+  o.connect(g).connect(audioCtx.destination);
+  o.start(); o.stop(audioCtx.currentTime + 0.25);
+}
+
+// ---------------------------------------------------------------------------
+// Main loop
+// ---------------------------------------------------------------------------
+let model = null;
+let frames = 0, fps = 0, fpsT = performance.now();
+
+async function detectLoop() {
+  const now = performance.now();
+  if (video.readyState >= 2) {
+    const predictions = await model.detect(video, 6, 0.2);
+    updateTrack(pickCat(predictions), now);
+  }
+  const m = now - track.lastSeen <= TUNING.lostAfterMs ? measure(now) : null;
+  const intent = analyzeKittenIntent(m, now);
+  drawFrame(m, intent);
+
+  frames++;
+  if (now - fpsT > 1000) { fps = frames * 1000 / (now - fpsT); frames = 0; fpsT = now; }
+  updateHUDOverlay(intent, m, fps);
+  requestAnimationFrame(detectLoop);
+}
+
+document.getElementById('startBtn').addEventListener('click', async () => {
+  const msg = document.getElementById('bootMsg');
+  try {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    msg.textContent = 'Requesting camera…';
+    if (!navigator.mediaDevices) throw new Error('Camera blocked: open this page over HTTPS or localhost.');
+    await setupCamera();
+    msg.textContent = 'Loading vision model…';
+    model = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
+    document.getElementById('boot').remove();
+    detectLoop();
+  } catch (err) {
+    msg.textContent = err.message || String(err);
+  }
+});
+
+document.getElementById('flipBtn').addEventListener('click', async () => {
+  facingMode = facingMode === 'environment' ? 'user' : 'environment';
+  track.history = []; track.lastSeen = 0;
+  await setupCamera();
+});
+
+document.getElementById('soundBtn').addEventListener('click', e => {
+  soundOn = !soundOn;
+  e.target.textContent = `Sound: ${soundOn ? 'on' : 'off'}`;
+});
+</script>
+</body>
+</html>
