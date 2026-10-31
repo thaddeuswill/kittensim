@@ -116,6 +116,7 @@ const TRIGGERS = {
   pounce: { text: 'WARNING: REAR-END CALIBRATION (POUNCE IMMINENT)', color: '#ff4a4a', alert: true },
   zoomies: { text: 'ALERT: ZOOMIES PROTOCOL ENGAGED', color: '#ffc94a', alert: true },
   tailTwitch: { text: 'WARNING: RAPID TAIL-TIP TWITCH // SENSORY OVERLOAD', color: '#ff8a3d', alert: true },
+  earFlick: { text: 'IRRITATION SPIKE // EAR FLICK', color: '#ffe14a', alert: true },
   tailSweep: { text: 'Status: Low tail sweep // Calculating attack vector', color: '#ffc94a' },
   sentry: { text: 'Status: Sentry mode / Judging you', color: '#b98bff' },
   loaf: { text: 'Status: Loaf configuration achieved. Do not disturb.', color: '#7dffb0' },
@@ -147,6 +148,12 @@ const TUNING = {
   tailWindowMs: 1500,
   tailTwitchFlips: 4,    // direction reversals inside the window = rapid twitch (~1.3 Hz and up)
   tailSweepHoldMs: 1200, // tail moving this long without twitching = low sweep
+  tailPauseMs: 800,      // a slow sweep nearly stops at each end of its swing; allow this long
+  // Ear flicks: a short burst of motion in the top band of her box (where the ears are)
+  earMoving: 0.04,       // ear-band motion above this = ears moving
+  earFlickMaxMs: 600,    // a flick starts, snaps back and stops within this long
+  earFlickHoldMs: 1500,  // how long the HUD shows a flick
+  earCooldownMs: 800,    // ignore new flicks this soon after one
 
   // Learned mode (Training bay)
   defaultLabels: ['POUNCE PREP', 'VOID STARE', 'CURTAIN RECON', 'LOAF'],
@@ -264,7 +271,66 @@ const tail = {
   state: null,     // 'twitch' | 'sweep' | null
 };
 
+// Time-based bookkeeping, run every tick: a perfectly still scene sends identical frames
+// (skipped above), and old reversals and sweeps still have to expire on time
+function tailSettle(now) {
+  tail.flips = tail.flips.filter(t => now - t < TUNING.tailWindowMs);
+  tail.rate = tail.flips.length / 2 / (TUNING.tailWindowMs / 1000);  // two reversals per wag
+  // Steady motion, with only brief pauses at the ends of each swing
+  if (now - tail.lastMove > TUNING.tailPauseMs) tail.sweepSince = 0;
+  tail.state = tail.flips.length >= TUNING.tailTwitchFlips ? 'twitch'
+    : tail.sweepSince && now - tail.sweepSince > TUNING.tailSweepHoldMs ? 'sweep' : null;
+}
+
+// Ear zone: the top row of the same grid. A flick is a burst that reverses direction at
+// least once and is over within earFlickMaxMs; head turns don't reverse, and longer
+// back-and-forth (a wag or head shake) runs past the limit.
+const ear = {
+  energy: 0,
+  lastC: null, lastV: null,
+  burstStart: 0, burstFlips: 0, lastMove: 0,
+  flicks: [],      // times of recent flicks
+  showUntil: 0,
+  cooldownUntil: 0,
+};
+
+function earStep(now, bodyStill, topEnergy, ex, ey, en) {
+  ear.energy = 0.5 * ear.energy + 0.5 * (bodyStill ? topEnergy : 0);
+  const moving = bodyStill && ear.energy > TUNING.earMoving && en > 0;
+  if (moving) {
+    if (!ear.burstStart) { ear.burstStart = now; ear.burstFlips = 0; }
+    ear.lastMove = now;
+    const c = { x: ex / en, y: ey / en };
+    if (ear.lastC) {
+      const v = { x: c.x - ear.lastC.x, y: c.y - ear.lastC.y };
+      if (Math.hypot(v.x, v.y) > TUNING.tailDeadzone) {
+        if (ear.lastV && v.x * ear.lastV.x + v.y * ear.lastV.y < 0) ear.burstFlips++;
+        ear.lastV = v;
+      }
+    }
+    ear.lastC = c;
+  }
+}
+
+// Runs every tick, even when no new camera frame arrived (a perfectly still scene sends
+// identical frames, and the burst still has to end on time)
+function earSettle(now) {
+  if (ear.burstStart && now - ear.lastMove > 150) {
+    // Burst over: was it short and snappy?
+    const quick = ear.lastMove - ear.burstStart <= TUNING.earFlickMaxMs;
+    if (quick && ear.burstFlips >= 1 && now >= ear.cooldownUntil && tail.state !== 'twitch') {
+      ear.flicks.push(now);
+      ear.showUntil = now + TUNING.earFlickHoldMs;
+      ear.cooldownUntil = now + TUNING.earCooldownMs;
+    }
+    ear.burstStart = 0;
+    ear.lastC = ear.lastV = null;
+  }
+  ear.flicks = ear.flicks.filter(t => now - t < 60000);
+}
+
 function resetTail() {
+  Object.assign(ear, { energy: 0, lastC: null, lastV: null, burstStart: 0, burstFlips: 0 });
   Object.assign(tail, { prev: null, energy: 0, lastC: null, lastV: null, flips: [], sweepSince: 0, rate: 0, state: null, hotCell: null });
 }
 
@@ -293,7 +359,7 @@ function tailStep(now) {
   if (bx1 - bx0 < 4 || by1 - by0 < 4) return;
 
   const GRID = 4, changed = new Float32Array(GRID * GRID), total = new Float32Array(GRID * GRID);
-  let bgChanged = 0, bgTotal = 0, sx = 0, sy = 0, n = 0;
+  let bgChanged = 0, bgTotal = 0, sx = 0, sy = 0, n = 0, ex = 0, ey = 0, en = 0;
   for (let y = 0; y < H; y++) {
     const inY = y >= by0 && y < by1, gy = Math.min(GRID - 1, ((y - by0) * GRID / (by1 - by0)) | 0);
     for (let x = 0; x < W; x++) {
@@ -302,6 +368,7 @@ function tailStep(now) {
         const gx = Math.min(GRID - 1, ((x - bx0) * GRID / (bx1 - bx0)) | 0);
         changed[gx + GRID * gy] += hit; total[gx + GRID * gy]++;
         if (hit && (gx === 0 || gx === GRID - 1 || gy === 0 || gy === GRID - 1)) { sx += x; sy += y; n++; }
+        if (hit && gy === 0) { ex += x; ey += y; en++; }
       } else { bgChanged += hit; bgTotal++; }
     }
   }
@@ -337,19 +404,19 @@ function tailStep(now) {
   } else {
     tail.lastC = tail.lastV = null;
   }
-  tail.flips = tail.flips.filter(t => now - t < TUNING.tailWindowMs);
-  tail.rate = tail.flips.length / 2 / (TUNING.tailWindowMs / 1000);  // two reversals per wag
-
-  // Steady motion, with only brief pauses at the ends of each swing
   if (moving) { tail.lastMove = now; if (!tail.sweepSince) tail.sweepSince = now; }
-  else if (now - tail.lastMove > 300) tail.sweepSince = 0;
+  tailSettle(now);
 
-  tail.state = tail.flips.length >= TUNING.tailTwitchFlips ? 'twitch'
-    : tail.sweepSince && now - tail.sweepSince > TUNING.tailSweepHoldMs ? 'sweep' : null;
+  let top = 0;
+  for (let gx = 0; gx < GRID; gx++) top = Math.max(top, total[gx] ? changed[gx] / total[gx] : 0);
+  earStep(now, bodyStill, Math.max(0, top - core), ex, ey, en);
 }
 
 function tailLoop() {
-  tailStep(performance.now());
+  const now = performance.now();
+  tailStep(now);
+  tailSettle(now);
+  earSettle(now);
   requestAnimationFrame(tailLoop);
 }
 
@@ -373,6 +440,7 @@ function analyzeKittenIntent(m, now) {
 
   if (m.speed > TUNING.zoomSpeed) return TRIGGERS.zoomies;
   if (tail.state === 'twitch') return TRIGGERS.tailTwitch;
+  if (ear.showUntil > now) return TRIGGERS.earFlick;
   if (brain.guess && brain.guess.conf >= TUNING.learnedMinConfidence) return learnedIntent(brain.guess.label);
   if (track.crouchSince && now - track.crouchSince > TUNING.stalkHoldMs) return TRIGGERS.pounce;
   if (tail.state === 'sweep') return TRIGGERS.tailSweep;
@@ -405,6 +473,7 @@ function updateHUDOverlay(intent, m, fps) {
     `CROUCH    ${f(m && m.crouch)}\n` +
     `ASPECT    ${f(m && m.aspect)}\n` +
     `TAIL      ${m ? `${f(tail.energy)} ${f(tail.rate, 1)}Hz ${tail.state || ''}` : '--'}\n` +
+    `EARS      ${m ? `${f(ear.energy)} ${ear.flicks.length} flicks/min` : '--'}\n` +
     (classifier && classifier.getNumClasses() >= 2
       ? `AI GUESS  ${brain.guess ? brain.guess.label.slice(0, 14) + ' ' + Math.round(brain.guess.conf * 100) + '%' : '--'}\n`
       : `BRAIN     RULES\n`) +
@@ -447,7 +516,7 @@ function drawFrame(m, intent) {
     ctx.setLineDash([s * 3, s * 2]);
     ctx.strokeRect(t.x, t.y, t.w, t.h);
     ctx.setLineDash([]);
-    ctx.fillText('TAIL', t.x + s * 2, t.y + t.h - s * 2);
+    ctx.fillText(ear.showUntil > performance.now() ? 'EAR' : 'TAIL', t.x + s * 2, t.y + t.h - s * 2);
   }
 }
 
