@@ -113,6 +113,8 @@
 const TRIGGERS = {
   pounce: { text: 'WARNING: REAR-END CALIBRATION (POUNCE IMMINENT)', color: '#ff4a4a', alert: true },
   zoomies: { text: 'ALERT: ZOOMIES PROTOCOL ENGAGED', color: '#ffc94a', alert: true },
+  tailTwitch: { text: 'WARNING: RAPID TAIL-TIP TWITCH // SENSORY OVERLOAD', color: '#ff8a3d', alert: true },
+  tailSweep: { text: 'Status: Low tail sweep // Calculating attack vector', color: '#ffc94a' },
   sentry: { text: 'Status: Sentry mode / Judging you', color: '#b98bff' },
   loaf: { text: 'Status: Loaf configuration achieved. Do not disturb.', color: '#7dffb0' },
   idle: { text: 'Status: Idle / Plotting minor chaos', color: '#64c8ff' },
@@ -132,7 +134,18 @@ const TUNING = {
   loafHoldMs: 8000,      // motionless this long = loaf
   sentryAspect: 0.85,    // taller than wide = sitting upright
   lostAfterMs: 1500,
+  detectEveryMs: 100,    // cap detection at ~10/s so tail tracking always gets frames
   baselineWindowMs: 6000,
+
+  // Tail tracking (fractions = share of pixels in a zone that changed since the last frame)
+  tailPixelDelta: 18,    // grey-level change that counts as "moved"
+  tailCoreStill: 0.03,   // torso below this = body still
+  tailBgStill: 0.02,     // room outside her box below this = camera steady
+  tailMoving: 0.03,      // tail-zone motion above this = tail is moving
+  tailDeadzone: 0.4,     // centroid shift (motion-canvas px) too small to count as a direction
+  tailWindowMs: 1500,
+  tailTwitchFlips: 4,    // direction reversals inside the window = rapid twitch (~1.3 Hz and up)
+  tailSweepHoldMs: 1200, // tail moving this long without twitching = low sweep
 
   // Learned mode (Training bay)
   defaultLabels: ['POUNCE PREP', 'VOID STARE', 'CURTAIN RECON', 'LOAF'],
@@ -222,6 +235,116 @@ function measure(now) {
 }
 
 // ---------------------------------------------------------------------------
+// Tail tracking. Tails are too thin and blurry to find directly, so we watch
+// for motion around the edges of her box while her torso and the room stay
+// still: a small, low-res frame difference split into a 4x4 grid.
+// ---------------------------------------------------------------------------
+const motion = document.createElement('canvas');
+const mctx = motion.getContext('2d', { willReadFrequently: true });
+const tail = {
+  prev: null,      // previous grayscale frame
+  energy: 0,       // smoothed tail-only motion
+  core: 0, bg: 0,
+  hotCell: null,   // busiest edge cell, in video pixels
+  lastC: null,     // last centroid of tail-zone motion
+  lastV: null,     // last direction it moved
+  flips: [],       // times the tail reversed direction
+  lastMove: 0,
+  sweepSince: 0,
+  rate: 0,         // twitch frequency, Hz
+  state: null,     // 'twitch' | 'sweep' | null
+};
+
+function resetTail() {
+  Object.assign(tail, { prev: null, energy: 0, lastC: null, lastV: null, flips: [], sweepSince: 0, rate: 0, state: null, hotCell: null });
+}
+
+function tailStep(now) {
+  const box = track.history[track.history.length - 1];
+  if (!box || now - track.lastSeen > TUNING.lostAfterMs || !video.videoWidth) return resetTail();
+  const W = 160, H = Math.round(160 * video.videoHeight / video.videoWidth);
+  if (motion.width !== W || motion.height !== H) { motion.width = W; motion.height = H; tail.prev = null; }
+  mctx.drawImage(video, 0, 0, W, H);
+  const px = mctx.getImageData(0, 0, W, H).data;
+  const gray = new Uint8Array(W * H);
+  for (let i = 0, j = 0; i < gray.length; i++, j += 4) gray[i] = (px[j] * 77 + px[j + 1] * 150 + px[j + 2] * 29) >> 8;
+  const prev = tail.prev;
+  if (prev) {
+    let same = true;
+    for (let i = 0; i < gray.length; i += 7) if (gray[i] !== prev[i]) { same = false; break; }
+    if (same) return;  // no new camera frame yet
+  }
+  tail.prev = gray;
+  if (!prev) return;
+
+  // Her box, widened (the tail tip often pokes out past the detector's box) and raised (tail held up)
+  const k = W / video.videoWidth;
+  const bx0 = Math.max(0, Math.floor((box.cx - box.w * 0.65) * k)), bx1 = Math.min(W, Math.ceil((box.cx + box.w * 0.65) * k));
+  const by0 = Math.max(0, Math.floor((box.cy - box.h * 0.75) * k)), by1 = Math.min(H, Math.ceil((box.cy + box.h * 0.55) * k));
+  if (bx1 - bx0 < 4 || by1 - by0 < 4) return;
+
+  const GRID = 4, changed = new Float32Array(GRID * GRID), total = new Float32Array(GRID * GRID);
+  let bgChanged = 0, bgTotal = 0, sx = 0, sy = 0, n = 0;
+  for (let y = 0; y < H; y++) {
+    const inY = y >= by0 && y < by1, gy = Math.min(GRID - 1, ((y - by0) * GRID / (by1 - by0)) | 0);
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x, hit = Math.abs(gray[i] - prev[i]) > TUNING.tailPixelDelta ? 1 : 0;
+      if (inY && x >= bx0 && x < bx1) {
+        const gx = Math.min(GRID - 1, ((x - bx0) * GRID / (bx1 - bx0)) | 0);
+        changed[gx + GRID * gy] += hit; total[gx + GRID * gy]++;
+        if (hit && (gx === 0 || gx === GRID - 1 || gy === 0 || gy === GRID - 1)) { sx += x; sy += y; n++; }
+      } else { bgChanged += hit; bgTotal++; }
+    }
+  }
+  // Inner 2x2 cells are torso; the 12 outer cells are where a tail can be
+  let core = 0, edge = 0, hot = -1;
+  for (let c = 0; c < GRID * GRID; c++) {
+    const e = total[c] ? changed[c] / total[c] : 0;
+    const gx = c % GRID, gy = (c / GRID) | 0;
+    if (gx > 0 && gx < GRID - 1 && gy > 0 && gy < GRID - 1) core += e / 4;
+    else if (e > edge) { edge = e; hot = c; }
+  }
+  const bg = bgTotal ? bgChanged / bgTotal : 0;
+  const bodyStill = core < TUNING.tailCoreStill && bg < TUNING.tailBgStill;
+  tail.energy = 0.5 * tail.energy + 0.5 * (bodyStill ? Math.max(0, edge - core) : 0);
+  tail.core = core;
+  tail.bg = bg;
+  const cw = (bx1 - bx0) / GRID, ch = (by1 - by0) / GRID;
+  tail.hotCell = hot < 0 ? null : { x: (bx0 + (hot % GRID) * cw) / k, y: (by0 + ((hot / GRID) | 0) * ch) / k, w: cw / k, h: ch / k };
+
+  // Follow the centre of the moving pixels in the tail zone and count direction reversals.
+  // A flicking tail never fully stops, so reversals (not pauses) are what give away its rhythm.
+  const moving = bodyStill && tail.energy > TUNING.tailMoving && n > 0;
+  if (moving) {
+    const c = { x: sx / n, y: sy / n };
+    if (tail.lastC) {
+      const v = { x: c.x - tail.lastC.x, y: c.y - tail.lastC.y };
+      if (Math.hypot(v.x, v.y) > TUNING.tailDeadzone) {
+        if (tail.lastV && v.x * tail.lastV.x + v.y * tail.lastV.y < 0) tail.flips.push(now);
+        tail.lastV = v;
+      }
+    }
+    tail.lastC = c;
+  } else {
+    tail.lastC = tail.lastV = null;
+  }
+  tail.flips = tail.flips.filter(t => now - t < TUNING.tailWindowMs);
+  tail.rate = tail.flips.length / 2 / (TUNING.tailWindowMs / 1000);  // two reversals per wag
+
+  // Steady motion, with only brief pauses at the ends of each swing
+  if (moving) { tail.lastMove = now; if (!tail.sweepSince) tail.sweepSince = now; }
+  else if (now - tail.lastMove > 300) tail.sweepSince = 0;
+
+  tail.state = tail.flips.length >= TUNING.tailTwitchFlips ? 'twitch'
+    : tail.sweepSince && now - tail.sweepSince > TUNING.tailSweepHoldMs ? 'sweep' : null;
+}
+
+function tailLoop() {
+  tailStep(performance.now());
+  requestAnimationFrame(tailLoop);
+}
+
+// ---------------------------------------------------------------------------
 // The rule-based intent engine
 // ---------------------------------------------------------------------------
 function analyzeKittenIntent(m, now) {
@@ -238,8 +361,10 @@ function analyzeKittenIntent(m, now) {
   else if (!track.crouchSince) track.crouchSince = now;
 
   if (m.speed > TUNING.zoomSpeed) return TRIGGERS.zoomies;
+  if (tail.state === 'twitch') return TRIGGERS.tailTwitch;
   if (brain.guess && brain.guess.conf >= TUNING.learnedMinConfidence) return learnedIntent(brain.guess.label);
   if (track.crouchSince && now - track.crouchSince > TUNING.stalkHoldMs) return TRIGGERS.pounce;
+  if (tail.state === 'sweep') return TRIGGERS.tailSweep;
   if (track.stillSince && now - track.stillSince > TUNING.loafHoldMs) return TRIGGERS.loaf;
   if (m.aspect < TUNING.sentryAspect) return TRIGGERS.sentry;
   return TRIGGERS.idle;
@@ -268,6 +393,7 @@ function updateHUDOverlay(intent, m, fps) {
     `SPEED     ${f(m && m.speed)} bl/s\n` +
     `CROUCH    ${f(m && m.crouch)}\n` +
     `ASPECT    ${f(m && m.aspect)}\n` +
+    `TAIL      ${m ? `${f(tail.energy)} ${f(tail.rate, 1)}Hz ${tail.state || ''}` : '--'}\n` +
     (classifier && classifier.getNumClasses() >= 2
       ? `AI GUESS  ${brain.guess ? brain.guess.label.slice(0, 14) + ' ' + Math.round(brain.guess.conf * 100) + '%' : '--'}\n`
       : `BRAIN     RULES\n`) +
@@ -300,6 +426,18 @@ function drawFrame(m, intent) {
   ctx.fillStyle = intent.color;
   ctx.font = `${Math.round(s * 7)}px ui-monospace, monospace`;
   ctx.fillText(`KITTEN // ${Math.round(m.score * 100)}%`, x, Math.max(s * 8, y - s * 4));
+
+  // Tail zone marker: the busiest edge cell while her body is still
+  if (tail.hotCell && tail.energy > TUNING.tailMoving) {
+    const t = tail.hotCell, color = tail.state === 'twitch' ? TRIGGERS.tailTwitch.color : '#ffc94a';
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = s;
+    ctx.setLineDash([s * 3, s * 2]);
+    ctx.strokeRect(t.x, t.y, t.w, t.h);
+    ctx.setLineDash([]);
+    ctx.fillText('TAIL', t.x + s * 2, t.y + t.h - s * 2);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -547,9 +685,12 @@ function beep(freq) {
 let model = null;
 let frames = 0, fps = 0, fpsT = performance.now();
 
+let lastDetect = 0;
+
 async function detectLoop() {
   const now = performance.now();
-  if (video.readyState >= 2) {
+  if (video.readyState >= 2 && now - lastDetect >= TUNING.detectEveryMs) {
+    lastDetect = now;
     const predictions = await model.detect(video, 6, 0.2);
     const cat = pickCat(predictions);
     updateTrack(cat, now);
@@ -583,6 +724,7 @@ document.getElementById('startBtn').addEventListener('click', async () => {
     if (brainError) setTrainStatus('Learning model failed to load; running on rules only.');
     document.getElementById('boot').remove();
     detectLoop();
+    tailLoop();
   } catch (err) {
     msg.textContent = err.message || String(err);
   }
@@ -591,6 +733,7 @@ document.getElementById('startBtn').addEventListener('click', async () => {
 document.getElementById('flipBtn').addEventListener('click', async () => {
   facingMode = facingMode === 'environment' ? 'user' : 'environment';
   track.history = []; track.lastSeen = 0;
+  resetTail();
   await setupCamera();
 });
 
