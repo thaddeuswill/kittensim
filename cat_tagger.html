@@ -40,6 +40,8 @@
     font-size: clamp(13px, 3.6vw, 18px); letter-spacing: .06em; text-transform: uppercase; text-shadow: 0 0 8px currentColor;
     margin-bottom: 8px; min-height: 2.6em; }
   #banner small { display: block; opacity: .7; font-size: .65em; }
+  #banner #meaning { text-transform: none; letter-spacing: .02em; font-size: .7em; opacity: .85; margin-top: 3px; text-shadow: none; }
+  #segments .l small { display: block; color: var(--hud); opacity: .6; font-size: 11px; }
   #player { position: relative; margin: 0 auto; background: #000; }
   #player video { display: block; width: 100%; height: 100%; }
   #overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
@@ -88,7 +90,7 @@
     <p class="hint" id="fileName">No video chosen. Recordings from your camera roll work.</p>
     <details>
       <summary>What it knows (edit behaviors)</summary>
-      <p class="hint">One per line: <code>LABEL | what it looks like</code>. The description is what the AI matches against, so write it like a photo caption. Changes are saved on this device and used on the next scan.</p>
+      <p class="hint">One per line: <code>LABEL | what it looks like | what it means</code>. The middle part is what the AI matches against, so write it like a photo caption. The meaning is optional and shows under the tag. Changes are saved on this device and used on the next scan.</p>
       <textarea id="behaviors" spellcheck="false"></textarea>
       <div class="controls"><button id="resetBehaviors">Reset to defaults</button></div>
     </details>
@@ -96,7 +98,7 @@
   </section>
 
   <section id="viewer" hidden>
-    <div id="banner"><small>KITTEN TACTICAL OVERLAY // VIDEO ANALYSIS</small><span id="tag">--</span></div>
+    <div id="banner"><small>KITTEN TACTICAL OVERLAY // VIDEO ANALYSIS</small><span id="tag">--</span><small id="meaning"></small></div>
     <div id="player">
       <video id="video" playsinline muted preload="auto"></video>
       <canvas id="overlay"></canvas>
@@ -128,18 +130,28 @@ import {
 // BEHAVIORS: what the tagger already "knows". CLIP compares each video frame to
 // these descriptions, so no training is needed. Edit them in the page or here.
 // ---------------------------------------------------------------------------
-const DEFAULT_BEHAVIORS = `POUNCE PREP | a photo of a cat crouched low with its body flat to the ground, about to pounce
-ZOOMIES | a blurry photo of a cat running fast
-LOAF | a photo of a cat sitting in a loaf with its paws tucked under its body
-NAP | a photo of a cat sleeping curled up with its eyes closed
-GROOMING | a photo of a cat licking its fur, grooming itself
-PLAYING | a photo of a cat playing with a toy
-EATING | a photo of a cat eating food from a bowl
-VOID STARE | a photo of a cat sitting still and staring intently at something
-CURTAIN RECON | a photo of a cat climbing up curtains
-SENTRY | a photo of a cat sitting upright and alert`;
+// Format: LABEL | what it looks like (CLIP matches this) | what it means (shown on the HUD)
+const DEFAULT_BEHAVIORS = `POUNCE PREP | a photo of a kitten crouched low with its rear end raised, wiggling, about to pounce | Apex predator ambush: calculating the pounce trajectory
+CRAB WALK | a photo of a kitten hopping sideways with its back arched and its fur puffed up | Defensive startle or high-arousal "scary monster" play
+HALLOWEEN ARCH | a photo of a cat with its back arched high, legs stiff and tail puffed up like a bottle brush | Maximum deterrence: making herself look twice as big
+EARS FLAT | a photo of a frightened cat with its ears flattened back against its head | Fear or defensive aggression: give her space
+SPLOOT | a photo of a cat lying flat on its belly with its back legs stretched straight out behind it | Total crash: dumping heat after a burnout
+TAIL UP GREETING | a photo of a cat walking toward the camera with its tail held straight up | Friendly and curious: open to interaction
+LOCKED ON | a photo of a cat with its ears pointed forward and eyes focused intently on something | Target acquired: tracking a sound or movement
+WINDOW WATCH | a photo of a cat sitting at a window watching birds outside | Frustrated predator: likely chattering at prey behind glass
+VOID STARE | a photo of a cat sitting perfectly still staring at a blank wall or empty corner | Hearing or seeing something humans can't
+BLACK SAUCERS | a close-up photo of a cat's face with huge round black dilated pupils | Adrenaline surge: hunting drive maxed out
+SLOW BLINK | a close-up photo of a relaxed cat with half-closed sleepy eyes | Trust protocol: she feels completely safe
+SWAT & INSPECT | a photo of a kitten reaching out with one paw to tap an object | Testing for life: is this thing alive?
+CURTAIN RECON | a photo of a cat climbing up curtains with its claws | Vertical territory expansion and claw maintenance
+ZOOMIES | a blurry photo of a cat running fast | Energy burn-off: releasing pent-up predatory adrenaline
+PLAYING | a photo of a kitten playing with a toy | Hunting practice
+GROOMING | a photo of a cat licking its fur, grooming itself | Maintenance mode
+EATING | a photo of a cat eating food from a bowl | Refuelling
+NAP | a photo of a cat sleeping curled up with its eyes closed | Recharging
+LOAF | a photo of a cat sitting in a loaf with its paws tucked under its body | Calm standby`;
 
-const NO_CAT = { label: 'NO CAT', prompt: 'a photo of a room with no cat in it' };
+const NO_CAT = { label: 'NO CAT', prompt: 'a photo of a room with no cat in it', meaning: '' };
 const UNSURE = 'UNSURE';
 
 const TUNING = {
@@ -147,10 +159,10 @@ const TUNING = {
   minScore: 0.35,          // COCO-SSD confidence needed to accept a "cat"
   labels: ['cat', 'dog'],  // COCO-SSD sometimes calls small kittens "dog"
   cropPad: 1.6,            // crop around the cat, with some room for context (bowl, curtains…)
-  minConfidence: 0.3,      // below this the sample is tagged UNSURE
+  minConfidence: 0.25,     // below this the sample is tagged UNSURE
   smoothWindow: 1,         // average with this many samples either side
   zoomSpeed: 2.0,          // body-lengths/sec between samples that forces ZOOMIES
-  alertLabels: /POUNCE|ATTACK/i,
+  alertLabels: /POUNCE|HALLOWEEN|EARS FLAT/i,
 };
 
 const COLORS = ['#ff7ad9', '#ffc94a', '#7dffb0', '#b98bff', '#64fff0', '#ff9f5a', '#9fd3ff', '#d4ff6a', '#ff6a8d', '#c0a8ff'];
@@ -181,8 +193,8 @@ $('resetBehaviors').addEventListener('click', () => {
 function parseBehaviors() {
   const seen = new Set();
   return behaviorsEl.value.split('\n').map(line => {
-    const [label, ...rest] = line.split('|');
-    return { label: (label || '').trim().toUpperCase(), prompt: rest.join('|').trim() };
+    const [label, prompt, meaning] = line.split('|').map(s => (s || '').trim());
+    return { label: label.toUpperCase(), prompt, meaning: meaning || '' };
   }).filter(b => b.label && b.prompt && !seen.has(b.label) && seen.add(b.label));
 }
 
@@ -298,6 +310,7 @@ let fileUrl = null, fileName = '';
 let result = null;    // { behaviors, step, duration, samples, segments }
 let cancelled = false;
 let scanBehaviors = [];
+const labelColors = new Map();
 
 fileInput.addEventListener('change', () => {
   const file = fileInput.files[0];
@@ -324,6 +337,7 @@ scanBtn.addEventListener('click', async () => {
   cancelled = false;
   $('results').hidden = true;
   result = null;
+  labelColors.clear();
   try { await video.play(); } catch (e) {}  // iOS won't hand over frames until the video has played once
   video.pause();
   video.controls = false;
@@ -436,9 +450,9 @@ function colorFor(label) {
   if (label === NO_CAT.label) return '#55606c';
   if (label === UNSURE) return '#2c3a48';
   if (TUNING.alertLabels.test(label)) return '#ff4a4a';
-  const labels = (result ? result.behaviors : scanBehaviors).map(b => b.label);
-  const i = Math.max(0, labels.indexOf(label));
-  return COLORS[i % COLORS.length];
+  // Colors go out in order of first appearance, so the few labels in one video never clash
+  if (!labelColors.has(label)) labelColors.set(label, COLORS[labelColors.size % COLORS.length]);
+  return labelColors.get(label);
 }
 
 function fmt(t) {
@@ -446,7 +460,13 @@ function fmt(t) {
   return `${m}:${s.toFixed(1).padStart(4, '0')}`;
 }
 
+function meaningFor(label) {
+  const b = (result ? result.behaviors : scanBehaviors).find(x => x.label === label);
+  return b ? b.meaning : '';
+}
+
 function showTag(tag, sub) {
+  $('meaning').textContent = tag ? meaningFor(tag.label) : '';
   if (!tag) { tagEl.textContent = '--'; bannerEl.style.color = 'var(--hud)'; return; }
   tagEl.textContent = `${tag.label}${tag.label === NO_CAT.label ? '' : ` // ${Math.round(tag.conf * 100)}%`}${sub ? `  ·  ${sub}` : ''}`;
   bannerEl.style.color = tag.label === UNSURE || tag.label === NO_CAT.label ? 'var(--dim)' : colorFor(tag.label);
@@ -518,6 +538,11 @@ function renderResults() {
     b.innerHTML = '<span class="t"></span><span class="l"></span><span class="p"></span>';
     b.querySelector('.t').textContent = `${fmt(seg.start)}–${fmt(seg.end)}`;
     b.querySelector('.l').textContent = seg.label;
+    if (meaningFor(seg.label)) {
+      const small = document.createElement('small');
+      small.textContent = meaningFor(seg.label);
+      b.querySelector('.l').appendChild(small);
+    }
     b.querySelector('.p').textContent = seg.label === NO_CAT.label ? '' : `${Math.round(seg.conf * 100)}%`;
     b.addEventListener('click', () => { video.currentTime = seg.start; video.play().catch(() => {}); });
     list.appendChild(b);
@@ -572,13 +597,16 @@ $('jsonBtn').addEventListener('click', () => {
   download(`${baseName()}-tags.json`, JSON.stringify({ ...result, samples }, null, 2), 'application/json');
 });
 $('csvBtn').addEventListener('click', () => {
-  const rows = ['start_s,end_s,label,confidence', ...result.segments.map(s =>
-    `${s.start.toFixed(2)},${s.end.toFixed(2)},"${s.label.replace(/"/g, '""')}",${s.conf.toFixed(3)}`)];
+  const q = s => `"${s.replace(/"/g, '""')}"`;
+  const rows = ['start_s,end_s,label,confidence,meaning', ...result.segments.map(s =>
+    `${s.start.toFixed(2)},${s.end.toFixed(2)},${q(s.label)},${s.conf.toFixed(3)},${q(meaningFor(s.label))}`)];
   download(`${baseName()}-tags.csv`, rows.join('\n'), 'text/csv');
 });
 $('vttBtn').addEventListener('click', () => {
+  const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const cues = result.segments.filter(s => s.label !== UNSURE).map(s =>
-    `${vttTime(s.start)} --> ${vttTime(s.end)}\n${s.label}${s.label === NO_CAT.label ? '' : ` (${Math.round(s.conf * 100)}%)`}`);
+    `${vttTime(s.start)} --> ${vttTime(s.end)}\n${esc(s.label)}${s.label === NO_CAT.label ? '' : ` (${Math.round(s.conf * 100)}%)`}` +
+    (meaningFor(s.label) ? `\n${esc(meaningFor(s.label))}` : ''));
   download(`${baseName()}.vtt`, `WEBVTT\n\n${cues.join('\n\n')}\n`, 'text/vtt');
 });
 </script>
