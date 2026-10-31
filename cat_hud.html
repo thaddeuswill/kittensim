@@ -82,16 +82,18 @@
 
 <div id="train" hidden>
   <header><span>TRAINING BAY</span><button id="closeTrain">Done</button></header>
-  <p class="hint">Hold a label's REC button while the kitten is doing that thing. Aim for 30+ samples per label, from a few angles and spots in the room. Train at least 2 labels; the HUD switches to learned mode once you do. Saved on this device automatically.</p>
+  <p class="hint">Hold a label's REC button while the kitten is doing that thing. Aim for 30+ samples per label, from a few angles and spots in the room. Or tap + IMG to teach a label from photos (pick several at once; close-ups for ear states). Train at least 2 labels; the HUD switches to learned mode once you do. Saved on this device automatically.</p>
   <div id="trainStatus"></div>
   <div id="labelRows"></div>
   <div class="foot">
     <button id="addLabel">+ Label</button>
+    <button id="earPack">+ Ear pack</button>
     <button id="exportBtn">Export</button>
     <button id="importBtn">Import</button>
     <button id="wipeBtn">Wipe</button>
   </div>
   <input type="file" id="importFile" accept="application/json,.json" hidden>
+  <input type="file" id="photoInput" accept="image/*" multiple hidden>
 </div>
 
 <div id="boot">
@@ -149,7 +151,15 @@ const TUNING = {
 
   // Learned mode (Training bay)
   defaultLabels: ['POUNCE PREP', 'VOID STARE', 'CURTAIN RECON', 'LOAF'],
-  alertLabels: /POUNCE|ATTACK/i,  // learned labels matching this flash red + beep
+  alertLabels: /POUNCE|ATTACK|AIRPLANE|PINNED/i,  // learned labels matching this flash red + beep
+  // "Ear pack" labels and what the HUD says when one is recognised (from the ear matrix)
+  earLabels: {
+    'EARS NEUTRAL': 'STATUS: IDLE // SYSTEM CHILL',
+    'EARS LOCKED FORWARD': 'TARGET ACQUIRED // AUDITORY LOCK',
+    'AIRPLANE EARS': 'WARNING: SENSORY OVERLOAD // AVOID PETTING',
+    'EARS PINNED': 'ALERT: HIGH-AROUSAL // AERODYNAMIC MODE',
+    'EARS SPLIT': 'DUAL-CHANNEL AUDIO PROCESSING',
+  },
   learnedMinConfidence: 0.6,      // smoothed share of nearest neighbours needed to show a guess
   knnK: 7,
   learnEveryMs: 250,              // how often to classify while running
@@ -474,14 +484,14 @@ const crop = document.createElement('canvas');
 crop.width = crop.height = 224;
 const cropCtx = crop.getContext('2d', { willReadFrequently: true });
 
-function embedCat(box) {
+function embedCat(box, source = video, srcW = video.videoWidth, srcH = video.videoHeight) {
   const side = Math.max(box.w, box.h) * 1.3;
   const sx = box.cx - side / 2, sy = box.cy - side / 2, k = 224 / side;
   const x0 = Math.max(0, sx), y0 = Math.max(0, sy);
-  const x1 = Math.min(video.videoWidth, sx + side), y1 = Math.min(video.videoHeight, sy + side);
+  const x1 = Math.min(srcW, sx + side), y1 = Math.min(srcH, sy + side);
   cropCtx.fillStyle = '#000';
   cropCtx.fillRect(0, 0, 224, 224);
-  cropCtx.drawImage(video, x0, y0, x1 - x0, y1 - y0, (x0 - sx) * k, (y0 - sy) * k, (x1 - x0) * k, (y1 - y0) * k);
+  cropCtx.drawImage(source, x0, y0, x1 - x0, y1 - y0, (x0 - sx) * k, (y0 - sy) * k, (x1 - x0) * k, (y1 - y0) * k);
   return tf.tidy(() =>
     featureModel.predict(tf.browser.fromPixels(crop).toFloat().div(127.5).sub(1).expandDims()));
 }
@@ -497,7 +507,10 @@ async function brainStep(box, now) {
       renderRows();
       setTrainStatus(`Recording ${brain.recording}… ${classifier.getClassExampleCount()[brain.recording]} samples`);
     } else if (classifier.getNumClasses() >= 2) {
-      const { confidences } = await classifier.predictClass(emb, TUNING.knnK);
+      // With only a few samples per label, a big k caps confidence (e.g. 3 of 7), so scale it down
+      const counts = Object.values(classifier.getClassExampleCount());
+      const k = Math.max(1, Math.min(TUNING.knnK, Math.min(...counts)));
+      const { confidences } = await classifier.predictClass(emb, k);
       for (const label of Object.keys(confidences)) {
         brain.conf[label] = 0.6 * (brain.conf[label] || 0) + 0.4 * confidences[label];
       }
@@ -518,7 +531,7 @@ function learnedIntent(label) {
   if (!brain.intents[label]) {
     const i = Math.max(0, brain.labels.indexOf(label));
     brain.intents[label] = {
-      text: `AI: ${label}`,
+      text: TUNING.earLabels[label] || `AI: ${label}`,
       color: TUNING.alertLabels.test(label) ? '#ff4a4a' : LEARNED_COLORS[i % LEARNED_COLORS.length],
       alert: TUNING.alertLabels.test(label),
     };
@@ -583,9 +596,10 @@ function renderRows() {
       const row = document.createElement('div');
       row.className = 'row';
       row.innerHTML = '<span class="name"></span><span class="count"></span>' +
-        '<button class="rec">● REC</button><button class="del" aria-label="Delete label">✕</button>';
+        '<button class="rec">● REC</button><button class="img">+ IMG</button><button class="del" aria-label="Delete label">✕</button>';
       row.querySelector('.name').textContent = label;
       bindRecord(row.querySelector('.rec'), label);
+      row.querySelector('.img').addEventListener('click', () => { photoLabel = label; photoInput.click(); });
       row.querySelector('.del').addEventListener('click', () => {
         if (!confirm(`Delete "${label}" and its samples?`)) return;
         if (counts[label]) classifier.clearClass(label);
@@ -624,6 +638,53 @@ function bindRecord(btn, label) {
 
 document.getElementById('trainBtn').addEventListener('click', () => { trainEl.hidden = false; renderRows(); });
 document.getElementById('closeTrain').addEventListener('click', () => { trainEl.hidden = true; });
+
+// --- Teach from photos: find the cat in each picture, crop to her, learn the crop ---
+const photoInput = document.getElementById('photoInput');
+const photoCanvas = document.createElement('canvas');
+let photoLabel = null;
+
+photoInput.addEventListener('change', async () => {
+  const files = [...photoInput.files];
+  photoInput.value = '';
+  if (!files.length || !photoLabel) return;
+  if (!featureModel || !model) return setTrainStatus('Vision models still loading…');
+  let added = 0, noCat = 0, failed = 0;
+  for (const [i, file] of files.entries()) {
+    setTrainStatus(`Learning ${photoLabel} from photo ${i + 1} of ${files.length}…`);
+    try {
+      const bmp = await createImageBitmap(file);
+      const scale = Math.min(1, 640 / Math.max(bmp.width, bmp.height));
+      photoCanvas.width = Math.round(bmp.width * scale);
+      photoCanvas.height = Math.round(bmp.height * scale);
+      photoCanvas.getContext('2d').drawImage(bmp, 0, 0, photoCanvas.width, photoCanvas.height);
+      bmp.close?.();
+      const cat = pickCat(await model.detect(photoCanvas, 6, 0.2));
+      // No cat found (tight close-ups often aren't detected): use the whole picture
+      const [x, y, w, h] = cat ? cat.bbox : [0, 0, photoCanvas.width, photoCanvas.height];
+      if (!cat) noCat++;
+      const emb = embedCat({ cx: x + w / 2, cy: y + h / 2, w: cat ? w : w / 1.3, h: cat ? h : h / 1.3 },
+        photoCanvas, photoCanvas.width, photoCanvas.height);
+      classifier.addExample(emb, photoLabel);
+      emb.dispose();
+      added++;
+    } catch (e) {
+      failed++;
+    }
+  }
+  forgetGuess(); saveBrain(); renderRows();
+  setTrainStatus(`Added ${added} photo${added === 1 ? '' : 's'} to ${photoLabel}.` +
+    (noCat ? ` ${noCat} had no cat detected, so the whole picture was used.` : '') +
+    (failed ? ` ${failed} could not be read.` : ''));
+});
+
+document.getElementById('earPack').addEventListener('click', () => {
+  const missing = Object.keys(TUNING.earLabels).filter(l => !brain.labels.includes(l));
+  if (!missing.length) return setTrainStatus('Ear labels are already in the list.');
+  brain.labels.push(...missing);
+  saveBrain(); renderRows();
+  setTrainStatus(`Added ${missing.length} ear labels. Teach each one with + IMG (close-up photos work best) or REC.`);
+});
 
 document.getElementById('addLabel').addEventListener('click', () => {
   const name = (prompt('New label (shown on the HUD):') || '').trim().toUpperCase();

@@ -145,6 +145,8 @@ const DEFAULT_BEHAVIORS = `POUNCE PREP | a photo of a kitten crouched low with i
 CRAB WALK | a photo of a kitten hopping sideways with its back arched and its fur puffed up | Defensive startle or high-arousal "scary monster" play
 HALLOWEEN ARCH | a photo of a cat with its back arched high, legs stiff and tail puffed up like a bottle brush | Maximum deterrence: making herself look twice as big
 EARS FLAT | a photo of a frightened cat with its ears flattened back against its head | Fear or defensive aggression: give her space
+AIRPLANE EARS | a close-up photo of a cat with both ears turned out sideways and flattened like airplane wings | Sensory overload: mild annoyance, avoid petting
+EARS SPLIT | a close-up photo of a cat with one ear pointing forward and the other ear turned to the side | Dual-channel audio processing: tracking two sounds at once
 SPLOOT | a photo of a cat lying flat on its belly with its back legs stretched straight out behind it | Total crash: dumping heat after a burnout
 TAIL UP GREETING | a photo of a cat walking toward the camera with its tail held straight up | Friendly and curious: open to interaction
 LOCKED ON | a photo of a cat with its ears pointed forward and eyes focused intently on something | Target acquired: tracking a sound or movement
@@ -172,7 +174,7 @@ const TUNING = {
   minConfidence: 0.25,     // below this the sample is tagged UNSURE
   smoothWindow: 1,         // average with this many samples either side
   zoomSpeed: 2.0,          // body-lengths/sec between samples that forces ZOOMIES
-  alertLabels: /POUNCE|HALLOWEEN|EARS FLAT|HISS/i,
+  alertLabels: /POUNCE|HALLOWEEN|EARS FLAT|AIRPLANE|HISS/i,
   soundThreshold: 0.15,    // YAMNet score needed to count a sound
 };
 
