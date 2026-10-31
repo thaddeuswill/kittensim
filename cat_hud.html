@@ -128,7 +128,6 @@ const TUNING = {
   minScore: 0.35,        // detector confidence needed to accept a "cat"
   labels: ['cat', 'dog'],// COCO-SSD sometimes calls small kittens "dog"
   crouchRatio: 0.78,     // box height vs her recent normal height; below this = crouched
-  crouchAspect: 1.35,    // box width/height; above this = long and low
   stalkSpeed: 0.35,      // body-lengths/sec; slower than this while crouched = stalking freeze
   stalkHoldMs: 350,      // freeze must last this long before the pounce warning fires
   zoomSpeed: 2.2,        // body-lengths/sec; faster = zoomies
@@ -365,7 +364,9 @@ function analyzeKittenIntent(m, now) {
   if (!still) track.stillSince = 0;
   else if (!track.stillSince) track.stillSince = now;
 
-  const crouched = m.crouch < TUNING.crouchRatio || m.aspect > TUNING.crouchAspect;
+  // Crouch = she got lower than her recent normal. A long, low box alone isn't enough:
+  // a kitten asleep on her side looks just as flat (her sleeping photo has aspect 1.66).
+  const crouched = m.crouch < TUNING.crouchRatio;
   const stalking = crouched && m.speed < TUNING.stalkSpeed;
   if (!stalking) track.crouchSince = 0;
   else if (!track.crouchSince) track.crouchSince = now;
