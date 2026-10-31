@@ -44,23 +44,37 @@
     border: 1px solid var(--hud); padding: 8px 12px; letter-spacing: .08em; text-transform: uppercase; cursor: pointer; }
   button:active { background: var(--hud); color: var(--bg); }
 
-  #train { position: fixed; left: 0; right: 0; bottom: 0; z-index: 4; max-height: 60vh; overflow-y: auto;
-    padding: 14px 16px max(16px, env(safe-area-inset-bottom)); background: rgba(5,8,12,.94);
+  #train { position: fixed; left: 0; right: 0; bottom: 0; z-index: 4; max-height: 75vh; overflow-y: auto;
+    padding: 14px 16px max(16px, env(safe-area-inset-bottom)); background: rgba(5,8,12,.95);
     border-top: 1px solid var(--hud); font-size: 13px; }
-  #train[hidden] { display: none; }
-  #train header { display: flex; justify-content: space-between; align-items: center; letter-spacing: .12em; }
-  #train .hint { margin: 8px 0 4px; opacity: .7; font-size: 12px; line-height: 1.5; }
-  #trainStatus { min-height: 1.5em; color: var(--warn); font-size: 12px; }
-  .row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid rgba(100,200,255,.15); }
-  .row { flex-wrap: wrap; }
-  .row .btns { display: flex; gap: 8px; margin-left: auto; }
-  .row .name { flex: 1 1 9em; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .row .count { width: 3.5em; text-align: right; opacity: .8; }
-  .row button { padding: 8px 9px; }
-  .row .rec { touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
-  .row .rec.on { background: var(--alert); border-color: var(--alert); color: var(--bg); }
-  .foot { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
-  body.recording #fx { box-shadow: inset 0 0 0 4px var(--warn); }
+  #train[hidden], #picker[hidden], #reviewFoot[hidden] { display: none; }
+  #train header, #picker header { display: flex; justify-content: space-between; align-items: center; letter-spacing: .12em; }
+  #train .hint { margin: 8px 0 10px; opacity: .7; font-size: 12px; line-height: 1.5; }
+  #trainStatus { min-height: 1.5em; color: var(--warn); font-size: 12px; margin: 8px 0; }
+  .foot { display: flex; flex-wrap: wrap; gap: 8px; }
+  button.big { font-size: 14px; padding: 12px 18px; flex: 1; }
+  button.go { background: var(--hud); color: var(--bg); }
+  .section { margin: 16px 0 6px; font-size: 11px; letter-spacing: .14em; opacity: .6; }
+  .item { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid rgba(100,200,255,.15); cursor: pointer; }
+  .item img { width: 56px; height: 56px; object-fit: cover; border: 1px solid rgba(100,200,255,.3); flex: none; }
+  .item .info { flex: 1; min-width: 0; }
+  .item .tag { color: var(--c); font-size: 14px; letter-spacing: .04em; }
+  .item small { display: block; opacity: .6; font-size: 11px; margin-top: 2px; }
+  .item.skip { opacity: .35; }
+  .item.skip .tag { text-decoration: line-through; }
+  .item button { flex: none; font-size: 16px; padding: 6px 12px; }
+  #learned { display: flex; flex-wrap: wrap; gap: 6px; }
+  #learned span { border: 1px solid var(--c); color: var(--c); padding: 4px 4px 4px 8px; font-size: 12px; display: inline-flex; gap: 6px; align-items: center; }
+  #learned button { border: 0; padding: 0 4px; font-size: 12px; background: none; color: inherit; }
+  details.backup { margin-top: 16px; }
+  details.backup summary { cursor: pointer; opacity: .7; font-size: 12px; letter-spacing: .1em; margin-bottom: 8px; }
+  #picker { position: fixed; inset: 0; z-index: 6; background: rgba(0,0,0,.6); display: flex; align-items: flex-end; }
+  #picker .sheet { width: 100%; max-height: 80vh; overflow-y: auto; background: var(--bg); border-top: 1px solid var(--hud);
+    padding: 14px 16px max(16px, env(safe-area-inset-bottom)); }
+  #pickerList button { display: block; width: 100%; text-align: left; margin-top: 6px; text-transform: none; letter-spacing: .02em; }
+  #pickerList button.current { background: rgba(100,200,255,.18); }
+  #pickerList small { display: block; opacity: .6; font-size: 11px; margin-top: 2px; }
+  #picker .foot { margin-top: 10px; }
 
   #boot { position: fixed; inset: 0; display: flex; flex-direction: column; gap: 18px;
     align-items: center; justify-content: center; text-align: center; padding: 16px; background: var(--bg); z-index: 5; }
@@ -80,24 +94,36 @@
 <div id="controls">
   <button id="flipBtn">Flip cam</button>
   <button id="soundBtn">Sound: on</button>
-  <button id="trainBtn">Train</button>
+  <button id="trainBtn">Teach</button>
 </div>
 
 <div id="train" hidden>
-  <header><span>TRAINING BAY</span><button id="closeTrain">Done</button></header>
-  <p class="hint">Hold a label's REC button while the kitten is doing that thing. Aim for 30+ samples per label, from a few angles and spots in the room. Or teach a label from your camera roll: + IMG for photos (pick several at once; close-ups for ear states), + VID for a clip. Train at least 2 labels; the HUD switches to learned mode once you do. Saved on this device automatically.</p>
+  <header><span>TEACH HER</span><button id="closeTrain">Done</button></header>
+  <p class="hint">Add photos or a video from your camera roll. Each one gets tagged automatically; tap a wrong tag to fix it, then tap Learn these. Once she's learned 2 or more behaviors, the HUD uses them.</p>
+  <div class="foot"><button id="addPhotos" class="big">+ Photos</button><button id="addVideo" class="big">+ Video</button></div>
   <div id="trainStatus"></div>
-  <div id="labelRows"></div>
-  <div class="foot">
-    <button id="addLabel">+ Label</button>
-    <button id="earPack">+ Ear pack</button>
-    <button id="exportBtn">Export</button>
-    <button id="importBtn">Import</button>
-    <button id="wipeBtn">Wipe</button>
+  <div id="review"></div>
+  <div id="reviewFoot" class="foot" hidden>
+    <button id="learnBtn" class="big go">✓ Learn these</button>
+    <button id="discardBtn" class="big">Discard</button>
   </div>
+  <div class="section">WHAT SHE'S LEARNED</div>
+  <div id="learned"></div>
+  <details class="backup">
+    <summary>BACKUP</summary>
+    <div class="foot"><button id="exportBtn">Export</button><button id="importBtn">Import</button><button id="wipeBtn">Wipe</button></div>
+  </details>
   <input type="file" id="importFile" accept="application/json,.json" hidden>
   <input type="file" id="photoInput" accept="image/*" multiple hidden>
   <input type="file" id="videoInput" accept="video/*" hidden>
+</div>
+
+<div id="picker" hidden>
+  <div class="sheet">
+    <header><span>TAG AS…</span><button id="pickerClose">Cancel</button></header>
+    <div class="foot" style="margin-top:10px"><button id="pickerNew">+ New tag</button><button id="pickerSkip">Don't learn this</button></div>
+    <div id="pickerList"></div>
+  </div>
 </div>
 
 <div id="boot">
@@ -159,25 +185,52 @@ const TUNING = {
   earFlickHoldMs: 1500,  // how long the HUD shows a flick
   earCooldownMs: 800,    // ignore new flicks this soon after one
 
-  // Learned mode (Training bay)
-  defaultLabels: ['POUNCE PREP', 'VOID STARE', 'CURTAIN RECON', 'LOAF'],
-  alertLabels: /POUNCE|ATTACK|AIRPLANE|PINNED/i,  // learned labels matching this flash red + beep
-  // "Ear pack" labels and what the HUD says when one is recognised (from the ear matrix)
-  earLabels: {
-    'EARS NEUTRAL': 'STATUS: IDLE // SYSTEM CHILL',
-    'EARS LOCKED FORWARD': 'TARGET ACQUIRED // AUDITORY LOCK',
+  // Learned mode (Teach panel)
+  alertLabels: /POUNCE|HALLOWEEN|EARS FLAT|AIRPLANE/i,  // learned labels matching this flash red + beep
+  // What the HUD says for ear tags (from the ear matrix); other tags show as "AI: TAG"
+  hudText: {
+    'LOCKED ON': 'TARGET ACQUIRED // AUDITORY LOCK',
     'AIRPLANE EARS': 'WARNING: SENSORY OVERLOAD // AVOID PETTING',
-    'EARS PINNED': 'ALERT: HIGH-AROUSAL // AERODYNAMIC MODE',
+    'EARS FLAT': 'ALERT: HIGH-AROUSAL // AERODYNAMIC MODE',
     'EARS SPLIT': 'DUAL-CHANNEL AUDIO PROCESSING',
   },
   learnedMinConfidence: 0.6,      // smoothed share of nearest neighbours needed to show a guess
   knnK: 7,
   learnEveryMs: 250,              // how often to classify while running
-  recordEveryMs: 150,             // how often to grab a sample while REC is held
-  vidSampleEvery: 0.33,           // + VID: seconds between frames taken from a clip
-  vidMaxSamples: 120,             // + VID: long clips are spread out to at most this many
+  vidSampleEvery: 0.33,           // seconds between frames taken from a clip
+  vidMaxSamples: 120,             // long clips are spread out to at most this many frames
+  // Auto-tagger: CLIP matches each crop against the behavior descriptions below
+  clipLib: 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1/dist/transformers.min.js',
+  clipModel: 'Xenova/clip-vit-base-patch32',
   featureModelUrl: 'https://storage.googleapis.com/tfjs-models/tfjs/mobilenet_v1_0.50_224/model.json',
 };
+
+// What the auto-tagger knows (same list as the video tagger):
+// LABEL | what it looks like (CLIP matches this) | what it means
+const BEHAVIORS = `POUNCE PREP | a photo of a kitten crouched low with its rear end raised, wiggling, about to pounce | Apex predator ambush: calculating the pounce trajectory
+CRAB WALK | a photo of a kitten hopping sideways with its back arched and its fur puffed up | Defensive startle or high-arousal "scary monster" play
+HALLOWEEN ARCH | a photo of a cat with its back arched high, legs stiff and tail puffed up like a bottle brush | Maximum deterrence: making herself look twice as big
+EARS FLAT | a photo of a frightened cat with its ears flattened back against its head | Fear or defensive aggression: give her space
+AIRPLANE EARS | a close-up photo of a cat with both ears turned out sideways and flattened like airplane wings | Sensory overload: mild annoyance, avoid petting
+EARS SPLIT | a close-up photo of a cat with one ear pointing forward and the other ear turned to the side | Dual-channel audio processing: tracking two sounds at once
+SPLOOT | a photo of a cat lying flat on its belly with its back legs stretched straight out behind it | Total crash: dumping heat after a burnout
+TAIL UP GREETING | a photo of a cat walking toward the camera with its tail held straight up | Friendly and curious: open to interaction
+LOCKED ON | a photo of a cat with its ears pointed forward and eyes focused intently on something | Target acquired: tracking a sound or movement
+WINDOW WATCH | a photo of a cat sitting at a window watching birds outside | Frustrated predator: likely chattering at prey behind glass
+VOID STARE | a photo of a cat sitting perfectly still staring at a blank wall or empty corner | Hearing or seeing something humans can't
+BLACK SAUCERS | a close-up photo of a cat's face with huge round black dilated pupils | Adrenaline surge: hunting drive maxed out
+SLOW BLINK | a close-up photo of a relaxed cat with half-closed sleepy eyes | Trust protocol: she feels completely safe
+SWAT & INSPECT | a photo of a kitten reaching out with one paw to tap an object | Testing for life: is this thing alive?
+CURTAIN RECON | a photo of a cat climbing up curtains with its claws | Vertical territory expansion and claw maintenance
+ZOOMIES | a blurry photo of a cat running fast | Energy burn-off: releasing pent-up predatory adrenaline
+PLAYING | a photo of a kitten playing with a toy | Hunting practice
+GROOMING | a photo of a cat licking its fur, grooming itself | Maintenance mode
+EATING | a photo of a cat eating food from a bowl | Refuelling
+NAP | a photo of a cat sleeping curled up with its eyes closed | Recharging
+LOAF | a photo of a cat sitting in a loaf with its paws tucked under its body | Calm standby`.split('\n').map(line => {
+  const [label, prompt, meaning] = line.split('|').map(x => x.trim());
+  return { label, prompt, meaning };
+});
 
 // ---------------------------------------------------------------------------
 // Camera
@@ -535,8 +588,8 @@ const LEARNED_COLORS = ['#ff7ad9', '#7dffb0', '#ffc94a', '#b98bff', '#64fff0', '
 let featureModel = null;
 let classifier = null;
 const brain = {
-  labels: [...TUNING.defaultLabels],
-  recording: null,   // label currently being recorded
+  labels: [],        // tags she's been taught, in the order they were first taught
+  importing: false,  // an import is running (live detection pauses)
   lastEmbed: 0,
   conf: {},          // smoothed confidence per label
   guess: null,       // { label, conf }
@@ -572,21 +625,21 @@ function embedCat(box, source = video, srcW = video.videoWidth, srcH = video.vid
     featureModel.predict(tf.browser.fromPixels(crop).toFloat().div(127.5).sub(1).expandDims()));
 }
 
+// Ask her trained model about one crop. With only a few samples per tag, a big k caps
+// confidence (e.g. 3 of 7), so k shrinks to the smallest tag's sample count.
+async function knnPredict(emb) {
+  const counts = Object.values(classifier.getClassExampleCount());
+  const k = Math.max(1, Math.min(TUNING.knnK, Math.min(...counts)));
+  return classifier.predictClass(emb, k);
+}
+
 async function brainStep(box, now) {
-  const every = brain.recording ? TUNING.recordEveryMs : TUNING.learnEveryMs;
-  if (!featureModel || now - brain.lastEmbed < every) return;
+  if (!featureModel || now - brain.lastEmbed < TUNING.learnEveryMs) return;
   brain.lastEmbed = now;
   const emb = embedCat(box);
   try {
-    if (brain.recording) {
-      classifier.addExample(emb, brain.recording);
-      renderRows();
-      setTrainStatus(`Recording ${brain.recording}… ${classifier.getClassExampleCount()[brain.recording]} samples`);
-    } else if (classifier.getNumClasses() >= 2) {
-      // With only a few samples per label, a big k caps confidence (e.g. 3 of 7), so scale it down
-      const counts = Object.values(classifier.getClassExampleCount());
-      const k = Math.max(1, Math.min(TUNING.knnK, Math.min(...counts)));
-      const { confidences } = await classifier.predictClass(emb, k);
+    if (classifier.getNumClasses() >= 2) {
+      const { confidences } = await knnPredict(emb);
       for (const label of Object.keys(confidences)) {
         brain.conf[label] = 0.6 * (brain.conf[label] || 0) + 0.4 * confidences[label];
       }
@@ -607,7 +660,7 @@ function learnedIntent(label) {
   if (!brain.intents[label]) {
     const i = Math.max(0, brain.labels.indexOf(label));
     brain.intents[label] = {
-      text: TUNING.earLabels[label] || `AI: ${label}`,
+      text: TUNING.hudText[label] || `AI: ${label}`,
       color: TUNING.alertLabels.test(label) ? '#ff4a4a' : LEARNED_COLORS[i % LEARNED_COLORS.length],
       alert: TUNING.alertLabels.test(label),
     };
@@ -641,7 +694,9 @@ function applyBrain(saved) {
   const ds = {};
   for (const [label, e] of Object.entries(saved.examples || {})) ds[label] = tf.tensor2d(b64ToF32(e.data), e.shape);
   classifier.setClassifierDataset(ds);
-  brain.labels = saved.labels && saved.labels.length ? saved.labels : [...TUNING.defaultLabels];
+  // Keep only tags that actually have samples (older files listed empty default labels too)
+  brain.labels = (saved.labels || []).filter(l => saved.examples && saved.examples[l]);
+  for (const l of Object.keys(ds)) if (!brain.labels.includes(l)) brain.labels.push(l);
   brain.intents = {};
   forgetGuess();
 }
@@ -658,115 +713,161 @@ function restoreBrain() {
   } catch (e) { /* no saved brain, or storage blocked */ }
 }
 
-// --- Training bay UI ---
+// ---------------------------------------------------------------------------
+// Teach panel: import photos or a video, auto-tag each one, fix tags, then learn.
+// ---------------------------------------------------------------------------
 const trainEl = document.getElementById('train');
-const rowsEl = document.getElementById('labelRows');
+const reviewEl = document.getElementById('review');
 const trainStatusEl = document.getElementById('trainStatus');
 function setTrainStatus(text) { trainStatusEl.textContent = text; }
 
-function renderRows() {
-  const counts = classifier ? classifier.getClassExampleCount() : {};
-  if (rowsEl.children.length !== brain.labels.length) {
-    rowsEl.innerHTML = '';
-    for (const label of brain.labels) {
-      const row = document.createElement('div');
-      row.className = 'row';
-      row.innerHTML = '<span class="name"></span><span class="count"></span>' +
-        '<span class="btns"><button class="rec">● REC</button><button class="img">+ IMG</button><button class="vid">+ VID</button>' +
-        '<button class="del" aria-label="Delete label">✕</button></span>';
-      row.querySelector('.name').textContent = label;
-      bindRecord(row.querySelector('.rec'), label);
-      row.querySelector('.img').addEventListener('click', () => { photoLabel = label; photoInput.click(); });
-      row.querySelector('.vid').addEventListener('click', () => { photoLabel = label; videoInput.click(); });
-      row.querySelector('.del').addEventListener('click', () => {
-        if (!confirm(`Delete "${label}" and its samples?`)) return;
-        if (counts[label]) classifier.clearClass(label);
-        brain.labels = brain.labels.filter(l => l !== label);
-        forgetGuess(); saveBrain(); renderRows();
+let review = [];   // items waiting for "Learn these": { thumb, embs, tag, conf, by, skip, note }
+
+function colorForTag(tag) {
+  if (!tag) return 'var(--dim, #8899aa)';
+  if (TUNING.alertLabels.test(tag)) return '#ff4a4a';
+  const all = [...brain.labels, ...review.map(r => r.tag).filter(t => t && !brain.labels.includes(t))];
+  return LEARNED_COLORS[Math.max(0, all.indexOf(tag)) % LEARNED_COLORS.length];
+}
+
+// --- Auto-tagger (CLIP), loaded the first time something is imported ---
+const clipTagger = { loading: null, ready: false, failed: false };
+
+function loadClip() {
+  if (!clipTagger.loading) clipTagger.loading = (async () => {
+    try {
+      const T = await import(TUNING.clipLib);
+      T.env.allowLocalModels = false;
+      const files = {};
+      const progress_callback = p => {
+        if (p.status !== 'progress' || !p.total) return;
+        files[p.file] = p;
+        const loaded = Object.values(files).reduce((a, f) => a + f.loaded, 0);
+        const total = Object.values(files).reduce((a, f) => a + f.total, 0);
+        setTrainStatus(`Downloading the auto-tagger… ${Math.round(loaded / 1e6)} / ${Math.round(total / 1e6)} MB (first time only)`);
+      };
+      const opts = { device: 'wasm', dtype: 'q8', progress_callback };
+      const [tokenizer, processor, textModel, visionModel] = await Promise.all([
+        T.AutoTokenizer.from_pretrained(TUNING.clipModel, { progress_callback }),
+        T.AutoProcessor.from_pretrained(TUNING.clipModel, { progress_callback }),
+        T.CLIPTextModelWithProjection.from_pretrained(TUNING.clipModel, opts),
+        T.CLIPVisionModelWithProjection.from_pretrained(TUNING.clipModel, opts),
+      ]);
+      const { text_embeds } = await textModel(tokenizer(BEHAVIORS.map(b => b.prompt), { padding: true, truncation: true }));
+      Object.assign(clipTagger, {
+        T, processor, visionModel, ready: true,
+        textVecs: unitRows(text_embeds.data, text_embeds.dims[0], text_embeds.dims[1]),
       });
-      rowsEl.appendChild(row);
+    } catch (e) {
+      console.warn('Auto-tagger unavailable', e);
+      clipTagger.failed = true;
     }
+  })();
+  return clipTagger.loading;
+}
+
+function unitRows(data, rows, dim) {
+  const out = [];
+  for (let r = 0; r < rows; r++) {
+    const v = Array.from(data.slice(r * dim, (r + 1) * dim));
+    const n = Math.hypot(...v) || 1;
+    out.push(v.map(x => x / n));
   }
-  [...rowsEl.children].forEach((row, i) => {
-    row.querySelector('.count').textContent = counts[brain.labels[i]] || 0;
-  });
+  return out;
 }
 
-function bindRecord(btn, label) {
-  const start = e => {
-    e.preventDefault();
-    if (!featureModel) return setTrainStatus('Vision model still loading…');
-    brain.recording = label;
-    btn.classList.add('on');
-    document.body.classList.add('recording');
-    setTrainStatus(`Recording ${label}… keep the kitten in frame`);
-  };
-  const stop = () => {
-    if (brain.recording !== label) return;
-    brain.recording = null;
-    btn.classList.remove('on');
-    document.body.classList.remove('recording');
-    forgetGuess(); saveBrain();
-    setTrainStatus(classifier.getNumClasses() >= 2 ? 'Saved. Learned mode active.' : 'Saved. Train one more label to switch on learned mode.');
-  };
-  btn.addEventListener('pointerdown', start);
-  ['pointerup', 'pointercancel', 'pointerleave'].forEach(ev => btn.addEventListener(ev, stop));
-  btn.addEventListener('contextmenu', e => e.preventDefault());
+// CLIP-style zero-shot: cosine similarity * 100, softmax over the behaviors
+async function clipGuess(canvas) {
+  const inputs = await clipTagger.processor(clipTagger.T.RawImage.fromCanvas(canvas));
+  const { image_embeds } = await clipTagger.visionModel(inputs);
+  const img = unitRows(image_embeds.data, 1, image_embeds.dims[1])[0];
+  const logits = clipTagger.textVecs.map(t => 100 * t.reduce((a, x, i) => a + x * img[i], 0));
+  const max = Math.max(...logits), exps = logits.map(l => Math.exp(l - max)), sum = exps.reduce((a, b) => a + b, 0);
+  let best = 0;
+  exps.forEach((e, i) => { if (e > exps[best]) best = i; });
+  return { tag: BEHAVIORS[best].label, conf: exps[best] / sum, by: 'AI guess' };
 }
 
-document.getElementById('trainBtn').addEventListener('click', () => { trainEl.hidden = false; renderRows(); });
-document.getElementById('closeTrain').addEventListener('click', () => { trainEl.hidden = true; });
+// Her own trained model wins when it's confident; otherwise ask CLIP
+async function suggestTag(emb, canvas) {
+  if (classifier.getNumClasses() >= 2) {
+    const { label, confidences } = await knnPredict(emb);
+    if (confidences[label] >= TUNING.learnedMinConfidence) return { tag: label, conf: confidences[label], by: 'her training' };
+  }
+  if (clipTagger.ready) return clipGuess(canvas);
+  return { tag: null, conf: 0, by: 'untagged' };
+}
 
-// --- Teach from photos: find the cat in each picture, crop to her, learn the crop ---
-const photoInput = document.getElementById('photoInput');
+// --- Turning a picture or video frame into a review sample ---
 const photoCanvas = document.createElement('canvas');
-let photoLabel = null;
+const thumbCanvas = document.createElement('canvas');
+thumbCanvas.width = thumbCanvas.height = 112;
 
-// Draw a picture or video frame (scaled to 640 px), find her, crop to her and learn the crop.
-// Returns false if no cat was found and wholeIfNoCat is off.
-async function learnFromImage(source, srcW, srcH, label, wholeIfNoCat) {
+// Scale to 640 px, find her, crop to her. Returns null if no cat and wholeIfNoCat is off.
+async function sampleFrom(source, srcW, srcH, wholeIfNoCat) {
   const scale = Math.min(1, 640 / Math.max(srcW, srcH));
   photoCanvas.width = Math.round(srcW * scale);
   photoCanvas.height = Math.round(srcH * scale);
   photoCanvas.getContext('2d').drawImage(source, 0, 0, photoCanvas.width, photoCanvas.height);
   const cat = pickCat(await model.detect(photoCanvas, 6, 0.2));
-  if (!cat && !wholeIfNoCat) return false;
+  if (!cat && !wholeIfNoCat) return null;
   // No cat found (tight close-ups often aren't detected): use the whole picture
   const [x, y, w, h] = cat ? cat.bbox : [0, 0, photoCanvas.width, photoCanvas.height];
   const emb = embedCat({ cx: x + w / 2, cy: y + h / 2, w: cat ? w : w / 1.3, h: cat ? h : h / 1.3 },
     photoCanvas, photoCanvas.width, photoCanvas.height);
-  classifier.addExample(emb, label);
-  emb.dispose();
-  return !!cat;
+  try {
+    const guess = await suggestTag(emb, crop);  // embedCat just drew her crop into `crop`
+    thumbCanvas.getContext('2d').drawImage(crop, 0, 0, 112, 112);
+    return { emb: emb.dataSync().slice(), thumb: thumbCanvas.toDataURL('image/jpeg', 0.7), found: !!cat, ...guess };
+  } finally {
+    emb.dispose();
+  }
 }
 
+async function startImport() {
+  if (!featureModel || !model) { setTrainStatus('Vision models still loading…'); return false; }
+  if (brain.importing) { setTrainStatus('Still working on the last import…'); return false; }
+  brain.importing = true;  // pauses live detection so the import gets the phone's full attention
+  if (classifier.getNumClasses() < 2 && !clipTagger.ready && !clipTagger.failed) {
+    setTrainStatus('Loading the auto-tagger…');
+    await loadClip();
+  }
+  return true;
+}
+
+function finishImport(message) {
+  brain.importing = false;
+  const untagged = clipTagger.failed && review.some(r => !r.tag);
+  setTrainStatus(message + (untagged ? ' The auto-tagger could not load, so tap each one to tag it.' : ' Tap any tag to fix it.'));
+  renderReview();
+}
+
+// --- Photos: one review item per photo ---
+const photoInput = document.getElementById('photoInput');
+document.getElementById('addPhotos').addEventListener('click', () => photoInput.click());
 photoInput.addEventListener('change', async () => {
   const files = [...photoInput.files];
   photoInput.value = '';
-  if (!files.length || !photoLabel) return;
-  if (!featureModel || !model) return setTrainStatus('Vision models still loading…');
-  if (brain.importing) return setTrainStatus('Still learning from the last import…');
-  brain.importing = true;
-  let added = 0, noCat = 0, failed = 0;
+  if (!files.length || !await startImport()) return;
+  let added = 0, failed = 0;
   for (const [i, file] of files.entries()) {
-    setTrainStatus(`Learning ${photoLabel} from photo ${i + 1} of ${files.length}…`);
+    setTrainStatus(`Tagging photo ${i + 1} of ${files.length}…`);
     try {
       const bmp = await createImageBitmap(file);
-      if (!await learnFromImage(bmp, bmp.width, bmp.height, photoLabel, true)) noCat++;
+      const s = await sampleFrom(bmp, bmp.width, bmp.height, true);
       bmp.close?.();
+      review.push({ thumb: s.thumb, embs: [s.emb], tag: s.tag, conf: s.conf, by: s.by, skip: false,
+        note: s.found ? 'photo' : 'photo · no cat detected, whole picture used' });
       added++;
+      renderReview();
     } catch (e) {
       failed++;
     }
   }
-  brain.importing = false;
-  forgetGuess(); saveBrain(); renderRows();
-  setTrainStatus(`Added ${added} photo${added === 1 ? '' : 's'} to ${photoLabel}.` +
-    (noCat ? ` ${noCat} had no cat detected, so the whole picture was used.` : '') +
-    (failed ? ` ${failed} could not be read.` : ''));
+  finishImport(`Tagged ${added} photo${added === 1 ? '' : 's'}.` + (failed ? ` ${failed} could not be read.` : ''));
 });
 
-// --- Teach from a video clip: step through it ~3 frames a second, learn every frame she's in ---
+// --- Video: ~3 frames a second; runs of frames with the same tag become one review item ---
 const videoInput = document.getElementById('videoInput');
 const clip = document.createElement('video');
 clip.muted = true;
@@ -782,16 +883,16 @@ function seekClip(t) {
   });
 }
 
+const clock = t => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+
+document.getElementById('addVideo').addEventListener('click', () => videoInput.click());
 videoInput.addEventListener('change', async () => {
   const file = videoInput.files[0];
   videoInput.value = '';
-  if (!file || !photoLabel) return;
-  if (!featureModel || !model) return setTrainStatus('Vision models still loading…');
-  if (brain.importing) return setTrainStatus('Still learning from the last import…');
-  const label = photoLabel;
+  if (!file || !await startImport()) return;
   const url = URL.createObjectURL(file);
-  brain.importing = true;  // pauses live detection so the import gets the phone's full attention
-  let added = 0, skipped = 0;
+  const frames = [];
+  let skipped = 0, message = '';
   try {
     clip.src = url;
     await new Promise((resolve, reject) => {
@@ -805,38 +906,162 @@ videoInput.addEventListener('change', async () => {
     const step = Math.max(TUNING.vidSampleEvery, duration / TUNING.vidMaxSamples);
     for (let t = step / 2; t < duration; t += step) {
       await seekClip(t);
-      if (await learnFromImage(clip, clip.videoWidth, clip.videoHeight, label, false)) added++;
-      else skipped++;
-      setTrainStatus(`Learning ${label} from video… ${Math.round((100 * t) / duration)}% (${added} samples)`);
+      const s = await sampleFrom(clip, clip.videoWidth, clip.videoHeight, false);
+      if (s) frames.push({ t, ...s }); else skipped++;
+      setTrainStatus(`Tagging video… ${Math.round((100 * t) / duration)}%`);
     }
-    setTrainStatus(`Added ${added} samples to ${label} from a ${duration.toFixed(1)} s clip.` +
-      (skipped ? ` Skipped ${skipped} frames where no kitten was detected.` : ''));
+    // Smooth single-frame flickers (A B A -> A A A), then group runs of the same tag
+    const tags = frames.map((f, i) =>
+      i > 0 && i < frames.length - 1 && frames[i - 1].tag === frames[i + 1].tag ? frames[i - 1].tag : f.tag);
+    let groups = 0;
+    for (let i = 0; i < frames.length;) {
+      let j = i;
+      // A run ends when the tag changes or she left the frame for a while (skipped frames)
+      while (j + 1 < frames.length && tags[j + 1] === tags[i] && frames[j + 1].t - frames[j].t < step * 1.5) j++;
+      const run = frames.slice(i, j + 1), mid = run[Math.floor(run.length / 2)];
+      review.push({ thumb: mid.thumb, embs: run.map(f => f.emb), tag: tags[i], by: run[0].by, skip: false,
+        conf: run.reduce((a, f) => a + (f.tag === tags[i] ? f.conf : 0), 0) / run.length,
+        note: `video ${clock(run[0].t)}–${clock(run.at(-1).t + step)} · ${run.length} frame${run.length === 1 ? '' : 's'}` });
+      groups++;
+      i = j + 1;
+    }
+    message = frames.length
+      ? `Tagged ${frames.length} frames as ${groups} moment${groups === 1 ? '' : 's'}.` + (skipped ? ` Skipped ${skipped} frames with no kitten.` : '')
+      : 'No kitten was detected in that video.';
   } catch (e) {
-    setTrainStatus(e.message || 'Could not learn from that video.');
+    message = e.message || 'Could not read that video.';
   } finally {
-    brain.importing = false;
     clip.removeAttribute('src');
     clip.load();
     URL.revokeObjectURL(url);
-    forgetGuess(); saveBrain(); renderRows();
+    finishImport(message);
   }
 });
 
-document.getElementById('earPack').addEventListener('click', () => {
-  const missing = Object.keys(TUNING.earLabels).filter(l => !brain.labels.includes(l));
-  if (!missing.length) return setTrainStatus('Ear labels are already in the list.');
-  brain.labels.push(...missing);
-  saveBrain(); renderRows();
-  setTrainStatus(`Added ${missing.length} ear labels. Teach each one with + IMG (close-up photos work best) or REC.`);
+// --- Review list ---
+function renderReview() {
+  reviewEl.innerHTML = '';
+  review.forEach((item, i) => {
+    const row = document.createElement('div');
+    row.className = 'item' + (item.skip ? ' skip' : '');
+    row.innerHTML = '<img alt=""><div class="info"><span class="tag"></span><small></small></div><button aria-label="Change tag">✎</button>';
+    row.querySelector('img').src = item.thumb;
+    row.querySelector('.tag').textContent = item.skip ? `${item.tag || 'UNTAGGED'} (won't learn)` : item.tag || 'UNTAGGED: tap to tag';
+    row.style.setProperty('--c', colorForTag(item.skip ? null : item.tag));
+    const how = item.by === 'you' ? 'tagged by you' : item.tag ? `${item.by} ${Math.round(item.conf * 100)}%` : '';
+    row.querySelector('small').textContent = [how, item.note].filter(Boolean).join(' · ');
+    row.addEventListener('click', () => openPicker(i));
+    reviewEl.appendChild(row);
+  });
+  document.getElementById('reviewFoot').hidden = !review.length;
+  const n = review.filter(r => !r.skip && r.tag).reduce((a, r) => a + r.embs.length, 0);
+  document.getElementById('learnBtn').textContent = `✓ Learn these (${n})`;
+  renderLearned();
+}
+
+// --- Tag picker ---
+const pickerEl = document.getElementById('picker');
+let pickerIndex = -1;
+
+function openPicker(i) {
+  pickerIndex = i;
+  const item = review[i], list = document.getElementById('pickerList');
+  list.innerHTML = '';
+  // Tags she already knows first, then the rest of the behavior list
+  const known = brain.labels.map(l => BEHAVIORS.find(b => b.label === l) || { label: l, meaning: 'your tag' });
+  const options = [...known, ...BEHAVIORS.filter(b => !brain.labels.includes(b.label))];
+  for (const b of options) {
+    const btn = document.createElement('button');
+    if (b.label === item.tag) btn.className = 'current';
+    btn.textContent = b.label;
+    const small = document.createElement('small');
+    small.textContent = b.meaning;
+    btn.appendChild(small);
+    btn.addEventListener('click', () => setTag(b.label));
+    list.appendChild(btn);
+  }
+  document.getElementById('pickerSkip').textContent = item.skip ? 'Learn this again' : "Don't learn this";
+  pickerEl.hidden = false;
+}
+
+function setTag(tag) {
+  Object.assign(review[pickerIndex], { tag, by: 'you', skip: false });
+  pickerEl.hidden = true;
+  renderReview();
+}
+
+document.getElementById('pickerClose').addEventListener('click', () => { pickerEl.hidden = true; });
+pickerEl.addEventListener('click', e => { if (e.target === pickerEl) pickerEl.hidden = true; });
+document.getElementById('pickerNew').addEventListener('click', () => {
+  const name = (prompt('New tag (shown on the HUD):') || '').trim().toUpperCase();
+  if (name) setTag(name);
+});
+document.getElementById('pickerSkip').addEventListener('click', () => {
+  review[pickerIndex].skip = !review[pickerIndex].skip;
+  pickerEl.hidden = true;
+  renderReview();
 });
 
-document.getElementById('addLabel').addEventListener('click', () => {
-  const name = (prompt('New label (shown on the HUD):') || '').trim().toUpperCase();
-  if (!name || brain.labels.includes(name)) return;
-  brain.labels.push(name);
-  saveBrain(); renderRows();
+// --- Learn / discard ---
+document.getElementById('learnBtn').addEventListener('click', () => {
+  let samples = 0;
+  const tags = new Set();
+  for (const item of review) {
+    if (item.skip || !item.tag) continue;
+    for (const v of item.embs) {
+      const t = tf.tensor1d(v);
+      classifier.addExample(t, item.tag);
+      t.dispose();
+      samples++;
+    }
+    tags.add(item.tag);
+    if (!brain.labels.includes(item.tag)) brain.labels.push(item.tag);
+  }
+  const left = review.filter(r => !r.skip && !r.tag).length;
+  review = review.filter(r => !r.skip && !r.tag);  // keep untagged ones so they can still be tagged
+  brain.intents = {};
+  forgetGuess(); saveBrain(); renderReview();
+  setTrainStatus(`Learned ${samples} sample${samples === 1 ? '' : 's'} across ${tags.size} tag${tags.size === 1 ? '' : 's'}.` +
+    (left ? ` ${left} untagged item${left === 1 ? '' : 's'} left to tag.` : '') +
+    (classifier.getNumClasses() < 2 ? ' Teach one more behavior to switch the HUD to learned mode.' : ''));
 });
 
+document.getElementById('discardBtn').addEventListener('click', () => {
+  review = [];
+  renderReview();
+  setTrainStatus('');
+});
+
+// --- What she's learned ---
+function renderLearned() {
+  const counts = classifier ? classifier.getClassExampleCount() : {};
+  const el = document.getElementById('learned');
+  el.innerHTML = '';
+  const tags = brain.labels.filter(l => counts[l]);
+  if (!tags.length) { el.textContent = 'Nothing yet.'; return; }
+  for (const tag of tags) {
+    const chip = document.createElement('span');
+    chip.style.setProperty('--c', colorForTag(tag));
+    chip.textContent = `${tag} · ${counts[tag]}`;
+    const x = document.createElement('button');
+    x.textContent = '✕';
+    x.setAttribute('aria-label', `Forget ${tag}`);
+    x.addEventListener('click', () => {
+      if (!confirm(`Forget everything she learned as ${tag}?`)) return;
+      classifier.clearClass(tag);
+      brain.labels = brain.labels.filter(l => l !== tag);
+      brain.intents = {};
+      forgetGuess(); saveBrain(); renderLearned();
+    });
+    chip.appendChild(x);
+    el.appendChild(chip);
+  }
+}
+
+document.getElementById('trainBtn').addEventListener('click', () => { trainEl.hidden = false; renderReview(); });
+document.getElementById('closeTrain').addEventListener('click', () => { trainEl.hidden = true; });
+
+// --- Backup ---
 document.getElementById('exportBtn').addEventListener('click', () => {
   const blob = new Blob([JSON.stringify(serializeBrain())], { type: 'application/json' });
   const a = document.createElement('a');
@@ -853,7 +1078,7 @@ importFile.addEventListener('change', async () => {
   if (!file) return;
   try {
     applyBrain(JSON.parse(await file.text()));
-    saveBrain(); rowsEl.innerHTML = ''; renderRows();
+    saveBrain(); renderReview();
     setTrainStatus(`Imported ${file.name}`);
   } catch (e) {
     setTrainStatus('That file is not a kitten brain export.');
@@ -862,11 +1087,11 @@ importFile.addEventListener('change', async () => {
 });
 
 document.getElementById('wipeBtn').addEventListener('click', () => {
-  if (!confirm('Wipe all training samples?')) return;
+  if (!confirm('Wipe everything she has learned?')) return;
   classifier.clearAllClasses();
-  brain.labels = [...TUNING.defaultLabels];
+  brain.labels = [];
   brain.intents = {};
-  forgetGuess(); saveBrain(); rowsEl.innerHTML = ''; renderRows();
+  forgetGuess(); saveBrain(); renderReview();
 });
 
 // ---------------------------------------------------------------------------
@@ -900,7 +1125,6 @@ async function detectLoop() {
     const cat = pickCat(predictions);
     updateTrack(cat, now);
     if (cat) await brainStep(track.history[track.history.length - 1], now);
-    else if (brain.recording) setTrainStatus('No kitten locked. Samples paused.');
   }
   const m = now - track.lastSeen <= TUNING.lostAfterMs ? measure(now) : null;
   if (!m) forgetGuess();
