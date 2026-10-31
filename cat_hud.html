@@ -52,8 +52,11 @@
   #train .hint { margin: 8px 0 4px; opacity: .7; font-size: 12px; line-height: 1.5; }
   #trainStatus { min-height: 1.5em; color: var(--warn); font-size: 12px; }
   .row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid rgba(100,200,255,.15); }
-  .row .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row { flex-wrap: wrap; }
+  .row .btns { display: flex; gap: 8px; margin-left: auto; }
+  .row .name { flex: 1 1 9em; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .row .count { width: 3.5em; text-align: right; opacity: .8; }
+  .row button { padding: 8px 9px; }
   .row .rec { touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
   .row .rec.on { background: var(--alert); border-color: var(--alert); color: var(--bg); }
   .foot { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
@@ -82,7 +85,7 @@
 
 <div id="train" hidden>
   <header><span>TRAINING BAY</span><button id="closeTrain">Done</button></header>
-  <p class="hint">Hold a label's REC button while the kitten is doing that thing. Aim for 30+ samples per label, from a few angles and spots in the room. Or tap + IMG to teach a label from photos (pick several at once; close-ups for ear states). Train at least 2 labels; the HUD switches to learned mode once you do. Saved on this device automatically.</p>
+  <p class="hint">Hold a label's REC button while the kitten is doing that thing. Aim for 30+ samples per label, from a few angles and spots in the room. Or teach a label from your camera roll: + IMG for photos (pick several at once; close-ups for ear states), + VID for a clip. Train at least 2 labels; the HUD switches to learned mode once you do. Saved on this device automatically.</p>
   <div id="trainStatus"></div>
   <div id="labelRows"></div>
   <div class="foot">
@@ -94,6 +97,7 @@
   </div>
   <input type="file" id="importFile" accept="application/json,.json" hidden>
   <input type="file" id="photoInput" accept="image/*" multiple hidden>
+  <input type="file" id="videoInput" accept="video/*" hidden>
 </div>
 
 <div id="boot">
@@ -170,6 +174,8 @@ const TUNING = {
   knnK: 7,
   learnEveryMs: 250,              // how often to classify while running
   recordEveryMs: 150,             // how often to grab a sample while REC is held
+  vidSampleEvery: 0.33,           // + VID: seconds between frames taken from a clip
+  vidMaxSamples: 120,             // + VID: long clips are spread out to at most this many
   featureModelUrl: 'https://storage.googleapis.com/tfjs-models/tfjs/mobilenet_v1_0.50_224/model.json',
 };
 
@@ -666,10 +672,12 @@ function renderRows() {
       const row = document.createElement('div');
       row.className = 'row';
       row.innerHTML = '<span class="name"></span><span class="count"></span>' +
-        '<button class="rec">● REC</button><button class="img">+ IMG</button><button class="del" aria-label="Delete label">✕</button>';
+        '<span class="btns"><button class="rec">● REC</button><button class="img">+ IMG</button><button class="vid">+ VID</button>' +
+        '<button class="del" aria-label="Delete label">✕</button></span>';
       row.querySelector('.name').textContent = label;
       bindRecord(row.querySelector('.rec'), label);
       row.querySelector('.img').addEventListener('click', () => { photoLabel = label; photoInput.click(); });
+      row.querySelector('.vid').addEventListener('click', () => { photoLabel = label; videoInput.click(); });
       row.querySelector('.del').addEventListener('click', () => {
         if (!confirm(`Delete "${label}" and its samples?`)) return;
         if (counts[label]) classifier.clearClass(label);
@@ -714,38 +722,104 @@ const photoInput = document.getElementById('photoInput');
 const photoCanvas = document.createElement('canvas');
 let photoLabel = null;
 
+// Draw a picture or video frame (scaled to 640 px), find her, crop to her and learn the crop.
+// Returns false if no cat was found and wholeIfNoCat is off.
+async function learnFromImage(source, srcW, srcH, label, wholeIfNoCat) {
+  const scale = Math.min(1, 640 / Math.max(srcW, srcH));
+  photoCanvas.width = Math.round(srcW * scale);
+  photoCanvas.height = Math.round(srcH * scale);
+  photoCanvas.getContext('2d').drawImage(source, 0, 0, photoCanvas.width, photoCanvas.height);
+  const cat = pickCat(await model.detect(photoCanvas, 6, 0.2));
+  if (!cat && !wholeIfNoCat) return false;
+  // No cat found (tight close-ups often aren't detected): use the whole picture
+  const [x, y, w, h] = cat ? cat.bbox : [0, 0, photoCanvas.width, photoCanvas.height];
+  const emb = embedCat({ cx: x + w / 2, cy: y + h / 2, w: cat ? w : w / 1.3, h: cat ? h : h / 1.3 },
+    photoCanvas, photoCanvas.width, photoCanvas.height);
+  classifier.addExample(emb, label);
+  emb.dispose();
+  return !!cat;
+}
+
 photoInput.addEventListener('change', async () => {
   const files = [...photoInput.files];
   photoInput.value = '';
   if (!files.length || !photoLabel) return;
   if (!featureModel || !model) return setTrainStatus('Vision models still loading…');
+  if (brain.importing) return setTrainStatus('Still learning from the last import…');
+  brain.importing = true;
   let added = 0, noCat = 0, failed = 0;
   for (const [i, file] of files.entries()) {
     setTrainStatus(`Learning ${photoLabel} from photo ${i + 1} of ${files.length}…`);
     try {
       const bmp = await createImageBitmap(file);
-      const scale = Math.min(1, 640 / Math.max(bmp.width, bmp.height));
-      photoCanvas.width = Math.round(bmp.width * scale);
-      photoCanvas.height = Math.round(bmp.height * scale);
-      photoCanvas.getContext('2d').drawImage(bmp, 0, 0, photoCanvas.width, photoCanvas.height);
+      if (!await learnFromImage(bmp, bmp.width, bmp.height, photoLabel, true)) noCat++;
       bmp.close?.();
-      const cat = pickCat(await model.detect(photoCanvas, 6, 0.2));
-      // No cat found (tight close-ups often aren't detected): use the whole picture
-      const [x, y, w, h] = cat ? cat.bbox : [0, 0, photoCanvas.width, photoCanvas.height];
-      if (!cat) noCat++;
-      const emb = embedCat({ cx: x + w / 2, cy: y + h / 2, w: cat ? w : w / 1.3, h: cat ? h : h / 1.3 },
-        photoCanvas, photoCanvas.width, photoCanvas.height);
-      classifier.addExample(emb, photoLabel);
-      emb.dispose();
       added++;
     } catch (e) {
       failed++;
     }
   }
+  brain.importing = false;
   forgetGuess(); saveBrain(); renderRows();
   setTrainStatus(`Added ${added} photo${added === 1 ? '' : 's'} to ${photoLabel}.` +
     (noCat ? ` ${noCat} had no cat detected, so the whole picture was used.` : '') +
     (failed ? ` ${failed} could not be read.` : ''));
+});
+
+// --- Teach from a video clip: step through it ~3 frames a second, learn every frame she's in ---
+const videoInput = document.getElementById('videoInput');
+const clip = document.createElement('video');
+clip.muted = true;
+clip.playsInline = true;
+clip.preload = 'auto';
+
+function seekClip(t) {
+  return new Promise(resolve => {
+    const done = () => { clearTimeout(timer); clip.removeEventListener('seeked', done); resolve(); };
+    const timer = setTimeout(done, 3000);
+    clip.addEventListener('seeked', done);
+    clip.currentTime = t;
+  });
+}
+
+videoInput.addEventListener('change', async () => {
+  const file = videoInput.files[0];
+  videoInput.value = '';
+  if (!file || !photoLabel) return;
+  if (!featureModel || !model) return setTrainStatus('Vision models still loading…');
+  if (brain.importing) return setTrainStatus('Still learning from the last import…');
+  const label = photoLabel;
+  const url = URL.createObjectURL(file);
+  brain.importing = true;  // pauses live detection so the import gets the phone's full attention
+  let added = 0, skipped = 0;
+  try {
+    clip.src = url;
+    await new Promise((resolve, reject) => {
+      clip.onloadedmetadata = resolve;
+      clip.onerror = () => reject(new Error('This phone could not open that video.'));
+    });
+    try { await clip.play(); } catch (e) {}  // iOS won't hand over frames until it has played once
+    clip.pause();
+    const duration = clip.duration;
+    if (!isFinite(duration) || duration <= 0) throw new Error('Could not read how long that video is.');
+    const step = Math.max(TUNING.vidSampleEvery, duration / TUNING.vidMaxSamples);
+    for (let t = step / 2; t < duration; t += step) {
+      await seekClip(t);
+      if (await learnFromImage(clip, clip.videoWidth, clip.videoHeight, label, false)) added++;
+      else skipped++;
+      setTrainStatus(`Learning ${label} from video… ${Math.round((100 * t) / duration)}% (${added} samples)`);
+    }
+    setTrainStatus(`Added ${added} samples to ${label} from a ${duration.toFixed(1)} s clip.` +
+      (skipped ? ` Skipped ${skipped} frames where no kitten was detected.` : ''));
+  } catch (e) {
+    setTrainStatus(e.message || 'Could not learn from that video.');
+  } finally {
+    brain.importing = false;
+    clip.removeAttribute('src');
+    clip.load();
+    URL.revokeObjectURL(url);
+    forgetGuess(); saveBrain(); renderRows();
+  }
 });
 
 document.getElementById('earPack').addEventListener('click', () => {
@@ -820,7 +894,7 @@ let lastDetect = 0;
 
 async function detectLoop() {
   const now = performance.now();
-  if (video.readyState >= 2 && now - lastDetect >= TUNING.detectEveryMs) {
+  if (!brain.importing && video.readyState >= 2 && now - lastDetect >= TUNING.detectEveryMs) {
     lastDetect = now;
     const predictions = await model.detect(video, 6, 0.2);
     const cat = pickCat(predictions);
