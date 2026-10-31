@@ -33,6 +33,8 @@
     font-size: clamp(13px, 3.6vw, 20px); letter-spacing: .06em; text-transform: uppercase;
     text-shadow: 0 0 8px currentColor; }
   #banner small { display: block; opacity: .7; font-size: .65em; margin-bottom: 4px; }
+  #banner #meaningLine { margin: 4px 0 0; text-transform: none; letter-spacing: .02em; opacity: .8; text-shadow: none; }
+  #banner #meaningLine:empty { display: none; }
 
   #stats { position: fixed; left: 16px; bottom: max(16px, env(safe-area-inset-bottom));
     padding: 8px 12px; background: rgba(5,8,12,.72); border-left: 2px solid var(--hud);
@@ -89,11 +91,12 @@
 <video id="webcam" playsinline muted autoplay></video>
 <div id="fx"></div>
 
-<div id="banner"><small>KITTEN TACTICAL OVERLAY v0.1</small><span id="intent">Booting…</span></div>
+<div id="banner"><small>KITTEN TACTICAL OVERLAY v0.1</small><span id="intent">Booting…</span><small id="meaningLine"></small></div>
 <div id="stats"></div>
 <div id="controls">
   <button id="flipBtn">Flip cam</button>
   <button id="soundBtn">Sound: on</button>
+  <button id="aiBtn">AI tags: off</button>
   <button id="trainBtn">Teach</button>
 </div>
 
@@ -202,6 +205,9 @@ const TUNING = {
   // Auto-tagger: CLIP matches each crop against the behavior descriptions below
   clipLib: 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1/dist/transformers.min.js',
   clipModel: 'Xenova/clip-vit-base-patch32',
+  aiTagEveryMs: 1000,             // live AI tags: how often CLIP looks at her (it's the slow part)
+  aiMinConfidence: 0.3,           // CLIP's share among all 21 behaviors needed to show its tag
+  aiStaleMs: 2500,                // drop a live AI tag this long after it was made
   featureModelUrl: 'https://storage.googleapis.com/tfjs-models/tfjs/mobilenet_v1_0.50_224/model.json',
 };
 
@@ -502,6 +508,9 @@ function analyzeKittenIntent(m, now) {
   if (ear.showUntil > now) return TRIGGERS.earFlick;
   if (brain.guess && brain.guess.conf >= TUNING.learnedMinConfidence) return learnedIntent(brain.guess.label);
   if (track.crouchSince && now - track.crouchSince > TUNING.stalkHoldMs) return TRIGGERS.pounce;
+  if (aiTags.on && brain.ai && now - brain.ai.at < TUNING.aiStaleMs && brain.ai.conf >= TUNING.aiMinConfidence) {
+    return learnedIntent(brain.ai.tag);
+  }
   if (tail.state === 'sweep') return TRIGGERS.tailSweep;
   if (track.stillSince && now - track.stillSince > TUNING.loafHoldMs) return TRIGGERS.loaf;
   if (m.aspect < TUNING.sentryAspect) return TRIGGERS.sentry;
@@ -519,6 +528,7 @@ let lastIntent = null;
 function updateHUDOverlay(intent, m, fps) {
   if (intent !== lastIntent) {
     intentEl.textContent = intent.text;
+    document.getElementById('meaningLine').textContent = intent.meaning || '';
     bannerEl.style.color = intent.color;
     document.body.classList.toggle('alert', !!intent.alert);
     if (intent.alert) beep(intent === TRIGGERS.pounce ? 880 : 520);
@@ -536,6 +546,7 @@ function updateHUDOverlay(intent, m, fps) {
     (classifier && classifier.getNumClasses() >= 2
       ? `AI GUESS  ${brain.guess ? brain.guess.label.slice(0, 14) + ' ' + Math.round(brain.guess.conf * 100) + '%' : '--'}\n`
       : `BRAIN     RULES\n`) +
+    (aiTags.on ? `AI TAG    ${!clipTagger.ready ? 'loading' : brain.ai ? `${brain.ai.tag.slice(0, 14)} ${Math.round(brain.ai.conf * 100)}%` : '--'}\n` : '') +
     `FPS       ${f(fps, 0)}`;
 }
 
@@ -633,10 +644,21 @@ async function knnPredict(emb) {
   return classifier.predictClass(emb, k);
 }
 
+// Live AI tags (the AI tags button): CLIP looks at her about once a second, so the HUD can
+// name all the behaviors before it has been taught anything
+const aiTags = { on: false, busy: false, last: 0 };
+
 async function brainStep(box, now) {
   if (!featureModel || now - brain.lastEmbed < TUNING.learnEveryMs) return;
   brain.lastEmbed = now;
   const emb = embedCat(box);
+  if (aiTags.on && clipTagger.ready && !aiTags.busy && now - aiTags.last >= TUNING.aiTagEveryMs) {
+    aiTags.busy = true;
+    aiTags.last = now;
+    // Not awaited: CLIP is slow, and it copies `crop` before the next embedCat redraws it
+    clipGuess(crop).then(g => { brain.ai = { ...g, at: performance.now() }; })
+      .catch(() => {}).finally(() => { aiTags.busy = false; });
+  }
   try {
     if (classifier.getNumClasses() >= 2) {
       const { confidences } = await knnPredict(emb);
@@ -654,13 +676,17 @@ async function brainStep(box, now) {
 function forgetGuess() {
   brain.conf = {};
   brain.guess = null;
+  brain.ai = null;
 }
 
 function learnedIntent(label) {
   if (!brain.intents[label]) {
-    const i = Math.max(0, brain.labels.indexOf(label));
+    const taught = brain.labels.indexOf(label);
+    const i = taught >= 0 ? taught : brain.labels.length + Math.max(0, BEHAVIORS.findIndex(b => b.label === label));
+    const behavior = BEHAVIORS.find(b => b.label === label);
     brain.intents[label] = {
       text: TUNING.hudText[label] || `AI: ${label}`,
+      meaning: behavior ? behavior.meaning : '',
       color: TUNING.alertLabels.test(label) ? '#ff4a4a' : LEARNED_COLORS[i % LEARNED_COLORS.length],
       alert: TUNING.alertLabels.test(label),
     };
@@ -745,6 +771,7 @@ function loadClip() {
         const loaded = Object.values(files).reduce((a, f) => a + f.loaded, 0);
         const total = Object.values(files).reduce((a, f) => a + f.total, 0);
         setTrainStatus(`Downloading the auto-tagger… ${Math.round(loaded / 1e6)} / ${Math.round(total / 1e6)} MB (first time only)`);
+        if (aiTags.on) aiBtn.textContent = `AI tags: ${Math.round((100 * loaded) / total)}%`;
       };
       const opts = { device: 'wasm', dtype: 'q8', progress_callback };
       const [tokenizer, processor, textModel, visionModel] = await Promise.all([
@@ -1154,6 +1181,9 @@ document.getElementById('startBtn').addEventListener('click', async () => {
     document.getElementById('boot').remove();
     detectLoop();
     tailLoop();
+    let aiPref = null;
+    try { aiPref = localStorage.getItem(AI_PREF_KEY); } catch (e) {}
+    if (aiPref === '1') setAiTags(true);
   } catch (err) {
     msg.textContent = err.message || String(err);
   }
@@ -1165,6 +1195,22 @@ document.getElementById('flipBtn').addEventListener('click', async () => {
   resetTail();
   await setupCamera();
 });
+
+const aiBtn = document.getElementById('aiBtn');
+const AI_PREF_KEY = 'kittenHud.aiTags';
+
+async function setAiTags(on) {
+  aiTags.on = on;
+  try { localStorage.setItem(AI_PREF_KEY, on ? '1' : '0'); } catch (e) {}
+  if (!on) { aiBtn.textContent = 'AI tags: off'; brain.ai = null; return; }
+  if (!clipTagger.ready) {
+    aiBtn.textContent = 'AI tags: loading';
+    await loadClip();
+    if (clipTagger.failed) { aiTags.on = false; aiBtn.textContent = 'AI tags: failed'; return; }
+  }
+  if (aiTags.on) aiBtn.textContent = 'AI tags: on';
+}
+aiBtn.addEventListener('click', () => setAiTags(!aiTags.on));
 
 document.getElementById('soundBtn').addEventListener('click', e => {
   soundOn = !soundOn;

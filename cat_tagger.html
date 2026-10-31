@@ -62,8 +62,19 @@
   #legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 10px; font-size: 12px; }
   #legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 6px; background: var(--c); vertical-align: -1px; }
   #segments { margin-top: 12px; max-height: 40vh; overflow-y: auto; }
-  #segments button { display: flex; width: 100%; gap: 12px; text-align: left; text-transform: none; letter-spacing: 0;
-    border: 0; border-left: 3px solid var(--c); margin-bottom: 4px; background: var(--panel); }
+  #segments .segrow { display: flex; gap: 4px; margin-bottom: 4px; }
+  #segments .jump { display: flex; flex: 1; min-width: 0; gap: 12px; text-align: left; text-transform: none; letter-spacing: 0;
+    border: 0; border-left: 3px solid var(--c); background: var(--panel); }
+  #segments .edit { flex: none; font-size: 15px; padding: 6px 12px; }
+  #segments .skip .l { text-decoration: line-through; opacity: .5; }
+  button.go { background: var(--hud); color: var(--bg); }
+  #picker { position: fixed; inset: 0; z-index: 6; background: rgba(0,0,0,.6); display: flex; align-items: flex-end; }
+  #picker .sheet { width: 100%; max-width: 900px; margin: 0 auto; max-height: 80vh; overflow-y: auto; background: var(--bg);
+    border-top: 1px solid var(--hud); padding: 14px 16px max(16px, env(safe-area-inset-bottom)); }
+  #picker header { margin: 0; }
+  #pickerList button { display: block; width: 100%; text-align: left; margin-top: 6px; text-transform: none; letter-spacing: .02em; }
+  #pickerList button.current { background: rgba(100,200,255,.18); }
+  #pickerList small { display: block; opacity: .6; font-size: 11px; margin-top: 2px; }
   #segments .t { opacity: .7; min-width: 8.5em; }
   #segments .l { flex: 1; color: var(--c); }
   #segments .p { opacity: .6; }
@@ -124,10 +135,20 @@
       <button id="jsonBtn">Export JSON</button>
       <button id="csvBtn">Export CSV</button>
       <button id="vttBtn">Export subtitles (.vtt)</button>
+      <button id="teachBtn" class="go">Teach the HUD</button>
     </div>
+    <p class="hint">Wrong tag? Tap ✎ on a segment to fix it. Teach the HUD adds the frames from each tagged segment to her live HUD training (skipped, unsure and no-cat segments are left out).</p>
     <div id="segments"></div>
   </section>
 </main>
+
+<div id="picker" hidden>
+  <div class="sheet">
+    <header><span>TAG AS…</span><button id="pickerClose">Cancel</button></header>
+    <div class="controls" style="margin-top:10px"><button id="pickerNew">+ New tag</button><button id="pickerSkip">Don't teach this</button></div>
+    <div id="pickerList"></div>
+  </div>
+</div>
 
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
@@ -175,6 +196,9 @@ const TUNING = {
   smoothWindow: 1,         // average with this many samples either side
   zoomSpeed: 2.0,          // body-lengths/sec between samples that forces ZOOMIES
   alertLabels: /POUNCE|HALLOWEEN|EARS FLAT|AIRPLANE|HISS/i,
+  // "Teach the HUD": the HUD learns from MobileNet fingerprints of the cat crop, so the tagger makes them too
+  featureModelUrl: 'https://storage.googleapis.com/tfjs-models/tfjs/mobilenet_v1_0.50_224/model.json',
+  hudBrainKey: 'kittenHud.brain.v1',  // where the HUD keeps her training (same site, so shared)
   soundThreshold: 0.15,    // YAMNet score needed to count a sound
 };
 
@@ -230,10 +254,22 @@ function parseBehaviors() {
 // Models: COCO-SSD finds the cat, CLIP decides what she's doing
 // ---------------------------------------------------------------------------
 let detector = null;
+let featureModel = null;  // null if it failed to load: tagging still works, teaching doesn't
 const clip = { tokenizer: null, processor: null, text: null, vision: null };
 
+async function loadFeatureModel() {
+  try {
+    const mobilenet = await tf.loadLayersModel(TUNING.featureModelUrl);
+    const layer = mobilenet.getLayer('conv_pw_13_relu');
+    return tf.model({ inputs: mobilenet.inputs, outputs: tf.layers.globalAveragePooling2d({}).apply(layer.output) });
+  } catch (e) {
+    console.warn('Feature model unavailable; Teach the HUD disabled', e);
+    return null;
+  }
+}
+
 async function loadModels() {
-  if (detector && clip.vision) return;
+  if (detector && clip.vision && featureModel) return;
   env.allowLocalModels = false;
   const files = {};
   const progress_callback = p => {
@@ -245,8 +281,9 @@ async function loadModels() {
   };
   const opts = { device: 'wasm', dtype: 'q8', progress_callback };
   setStatus('Loading vision models…');
-  [detector, clip.tokenizer, clip.processor, clip.text, clip.vision] = await Promise.all([
+  [detector, featureModel, clip.tokenizer, clip.processor, clip.text, clip.vision] = await Promise.all([
     detector || cocoSsd.load({ base: 'lite_mobilenet_v2' }),
+    featureModel || loadFeatureModel(),
     AutoTokenizer.from_pretrained(TUNING.clipModel, { progress_callback }),
     AutoProcessor.from_pretrained(TUNING.clipModel, { progress_callback }),
     CLIPTextModelWithProjection.from_pretrained(TUNING.clipModel, opts),
@@ -313,6 +350,29 @@ function squareFrom(box) {
   sctx.fillRect(0, 0, 224, 224);
   sctx.drawImage(frame, x0, y0, x1 - x0, y1 - y0, (x0 - sx) * k, (y0 - sy) * k, (x1 - x0) * k, (y1 - y0) * k);
   return square;
+}
+
+// The HUD's fingerprint: MobileNet on a square crop 1.3x her box, unit length (how the HUD stores samples)
+const hudCrop = document.createElement('canvas');
+hudCrop.width = hudCrop.height = 224;
+const hudCtx = hudCrop.getContext('2d', { willReadFrequently: true });
+
+function hudFingerprint(box) {
+  if (!featureModel) return null;
+  const side = Math.max(box.w, box.h) * 1.3;
+  const sx = box.x + box.w / 2 - side / 2, sy = box.y + box.h / 2 - side / 2, k = 224 / side;
+  const x0 = Math.max(0, sx), y0 = Math.max(0, sy);
+  const x1 = Math.min(frame.width, sx + side), y1 = Math.min(frame.height, sy + side);
+  hudCtx.fillStyle = '#000';
+  hudCtx.fillRect(0, 0, 224, 224);
+  hudCtx.drawImage(frame, x0, y0, x1 - x0, y1 - y0, (x0 - sx) * k, (y0 - sy) * k, (x1 - x0) * k, (y1 - y0) * k);
+  const v = tf.tidy(() => {
+    const out = featureModel.predict(tf.browser.fromPixels(hudCrop).toFloat().div(127.5).sub(1).expandDims());
+    return out.div(out.norm());
+  });
+  const data = v.dataSync().slice();
+  v.dispose();
+  return data;
 }
 
 function pickCat(predictions) {
@@ -470,6 +530,7 @@ scanBtn.addEventListener('click', async () => {
         box: box && { x: box.x / frame.width, y: box.y / frame.height, w: box.w / frame.width, h: box.h / frame.height },
         catScore: cat ? cat.score : 0,
         probs,
+        emb: box ? hudFingerprint(box) : null,
       });
       const guess = tagSample(all, samples, samples.length - 1);
       drawOverlay(samples.at(-1), guess);
@@ -650,22 +711,147 @@ function renderResults() {
   const list = $('segments');
   list.innerHTML = '';
   for (const seg of allSegments()) {
-    if (seg.label === UNSURE) continue;
+    const row = document.createElement('div');
+    row.className = 'segrow' + (seg.skip ? ' skip' : '');
     const b = document.createElement('button');
+    b.className = 'jump';
     b.style.setProperty('--c', colorFor(seg.label));
     b.innerHTML = '<span class="t"></span><span class="l"></span><span class="p"></span>';
     b.querySelector('.t').textContent = `${fmt(seg.start)}–${fmt(seg.end)}`;
-    b.querySelector('.l').textContent = (seg.sound ? '♪ ' : '') + seg.label;
-    if (meaningFor(seg.label)) {
+    b.querySelector('.l').textContent = (seg.sound ? '♪ ' : '') + seg.label + (seg.skip ? " (won't teach)" : '');
+    // Frames only teach the HUD when the detector found her in them
+    const teachable = !seg.sound && ![UNSURE, NO_CAT.label].includes(seg.label) &&
+      result.samples.some(x => x.emb && x.t >= seg.start && x.t < seg.end);
+    const notes = [meaningFor(seg.label),
+      !seg.sound && !seg.skip && ![UNSURE, NO_CAT.label].includes(seg.label) && !teachable ? "kitten not detected here, so it can't teach the HUD" : '']
+      .filter(Boolean);
+    if (notes.length) {
       const small = document.createElement('small');
-      small.textContent = meaningFor(seg.label);
+      small.textContent = notes.join(' · ');
       b.querySelector('.l').appendChild(small);
     }
-    b.querySelector('.p').textContent = seg.label === NO_CAT.label ? '' : `${Math.round(seg.conf * 100)}%`;
+    b.querySelector('.p').textContent = seg.by === 'you' ? 'you' : seg.label === NO_CAT.label ? '' : `${Math.round(seg.conf * 100)}%`;
     b.addEventListener('click', () => { video.currentTime = seg.start; video.play().catch(() => {}); });
-    list.appendChild(b);
+    row.appendChild(b);
+    if (!seg.sound) {
+      const edit = document.createElement('button');
+      edit.className = 'edit';
+      edit.textContent = '✎';
+      edit.setAttribute('aria-label', 'Change tag');
+      edit.addEventListener('click', () => openPicker(seg));
+      row.appendChild(edit);
+    }
+    list.appendChild(row);
   }
+  updateTeachButton();
 }
+
+// ---------------------------------------------------------------------------
+// Fixing tags and teaching the HUD
+// ---------------------------------------------------------------------------
+const pickerEl = $('picker');
+let pickerSeg = null;
+
+function hudBrain() {
+  try { return JSON.parse(localStorage.getItem(TUNING.hudBrainKey)) || null; } catch (e) { return null; }
+}
+
+function openPicker(seg) {
+  pickerSeg = seg;
+  const list = $('pickerList');
+  list.innerHTML = '';
+  // Tags the HUD already knows first, then this scan's behaviors
+  const known = ((hudBrain() || {}).labels || []).map(l =>
+    result.behaviors.find(b => b.label === l) || { label: l, meaning: 'your tag' });
+  const options = [...known, ...result.behaviors.filter(b => !known.some(k => k.label === b.label))];
+  for (const b of options) {
+    const btn = document.createElement('button');
+    if (b.label === seg.label) btn.className = 'current';
+    btn.textContent = b.label;
+    const small = document.createElement('small');
+    small.textContent = b.meaning || '';
+    btn.appendChild(small);
+    btn.addEventListener('click', () => setSegTag(b.label));
+    list.appendChild(btn);
+  }
+  $('pickerSkip').textContent = seg.skip ? 'Teach this again' : "Don't teach this";
+  pickerEl.hidden = false;
+}
+
+function setSegTag(label) {
+  Object.assign(pickerSeg, { label, by: 'you', skip: false });
+  pickerEl.hidden = true;
+  result.taught = false;
+  renderResults();
+}
+
+$('pickerClose').addEventListener('click', () => { pickerEl.hidden = true; });
+pickerEl.addEventListener('click', e => { if (e.target === pickerEl) pickerEl.hidden = true; });
+$('pickerNew').addEventListener('click', () => {
+  const name = (prompt('New tag (shown on the HUD):') || '').trim().toUpperCase();
+  if (name) setSegTag(name);
+});
+$('pickerSkip').addEventListener('click', () => {
+  pickerSeg.skip = !pickerSeg.skip;
+  pickerEl.hidden = true;
+  result.taught = false;
+  renderResults();
+});
+
+// Frames worth teaching: in a kept, tagged segment, with her in view
+function teachableFrames() {
+  const out = [];
+  for (const seg of result.segments) {
+    if (seg.skip || seg.label === UNSURE || seg.label === NO_CAT.label) continue;
+    for (const s of result.samples) if (s.emb && s.t >= seg.start && s.t < seg.end) out.push({ label: seg.label, emb: s.emb });
+  }
+  return out;
+}
+
+function updateTeachButton() {
+  const btn = $('teachBtn'), n = teachableFrames().length;
+  btn.disabled = !featureModel || !n || result.taught;
+  btn.textContent = result.taught ? '✓ Taught the HUD' : `Teach the HUD (${n} frames)`;
+}
+
+function f32ToB64(arr) {
+  const u8 = new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
+  let out = '';
+  for (let i = 0; i < u8.length; i += 0x8000) out += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+  return btoa(out);
+}
+function b64ToF32(b64) {
+  const str = atob(b64), u8 = new Uint8Array(str.length);
+  for (let i = 0; i < str.length; i++) u8[i] = str.charCodeAt(i);
+  return new Float32Array(u8.buffer);
+}
+
+// Append to the HUD's saved training (same format the HUD's Export uses)
+$('teachBtn').addEventListener('click', () => {
+  const frames = teachableFrames();
+  const saved = hudBrain() || { version: 1, labels: [], examples: {} };
+  const byLabel = {};
+  for (const f of frames) (byLabel[f.label] = byLabel[f.label] || []).push(f.emb);
+  for (const [label, embs] of Object.entries(byLabel)) {
+    const dim = embs[0].length, old = saved.examples[label];
+    const before = old && old.shape[1] === dim ? b64ToF32(old.data) : new Float32Array(0);
+    const all = new Float32Array(before.length + embs.length * dim);
+    all.set(before);
+    embs.forEach((e, i) => all.set(e, before.length + i * dim));
+    saved.examples[label] = { shape: [all.length / dim, dim], data: f32ToB64(all) };
+    if (!saved.labels.includes(label)) saved.labels.push(label);
+  }
+  try {
+    localStorage.setItem(TUNING.hudBrainKey, JSON.stringify(saved));
+  } catch (e) {
+    return setStatus("Couldn't save to the HUD: this phone's storage for the site is full. Use the HUD's Backup → Export, then Wipe and teach again.");
+  }
+  result.taught = true;
+  updateTeachButton();
+  const tags = Object.keys(byLabel);
+  setStatus(`Taught the HUD ${frames.length} frames across ${tags.length} tag${tags.length === 1 ? '' : 's'} (${tags.join(', ')}). ` +
+    'Open the HUD, or reload it if it is already open, to use them.');
+});
 
 // Vision segments and sound segments in one time-ordered list
 function allSegments() {
@@ -718,7 +904,8 @@ const vttTime = t => {
 
 $('jsonBtn').addEventListener('click', () => {
   const samples = result.samples.map(s => ({ t: s.t, box: s.box, tag: s.tag.label, conf: +s.tag.conf.toFixed(3) }));
-  download(`${baseName()}-tags.json`, JSON.stringify({ ...result, samples }, null, 2), 'application/json');
+  const segments = result.segments.map(({ label, start, end, conf, by, skip }) => ({ label, start, end, conf, by, skip }));
+  download(`${baseName()}-tags.json`, JSON.stringify({ ...result, samples, segments }, null, 2), 'application/json');
 });
 $('csvBtn').addEventListener('click', () => {
   const q = s => `"${s.replace(/"/g, '""')}"`;
