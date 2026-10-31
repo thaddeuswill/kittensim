@@ -104,6 +104,7 @@
   <header><span>TEACH HER</span><button id="closeTrain">Done</button></header>
   <p class="hint">Add photos or a video from your camera roll. Each one gets tagged automatically; tap a wrong tag to fix it, then tap Learn these. Once she's learned 2 or more behaviors, the HUD uses them.</p>
   <div class="foot"><button id="addPhotos" class="big">+ Photos</button><button id="addVideo" class="big">+ Video</button></div>
+  <p class="hint">Want the full scan of a video, with a timeline and sound tags? Use the <a href="cat_tagger.html" style="color: var(--hud)">video scanner</a>; its Teach the HUD button sends your fixed tags here.</p>
   <div id="trainStatus"></div>
   <div id="review"></div>
   <div id="reviewFoot" class="foot" hidden>
@@ -816,13 +817,17 @@ async function clipGuess(canvas) {
 }
 
 // Her own trained model wins when it's confident; otherwise ask CLIP
+// The AI scanner always runs; when her training is confident its tag goes first and the
+// AI's differing guess is kept as `alt`, so a coarse taught tag never hides the 21 behaviors
 async function suggestTag(emb, canvas) {
+  const ai = clipTagger.ready ? await clipGuess(canvas) : null;
   if (classifier.getNumClasses() >= 2) {
     const { label, confidences } = await knnPredict(emb);
-    if (confidences[label] >= TUNING.learnedMinConfidence) return { tag: label, conf: confidences[label], by: 'her training' };
+    if (confidences[label] >= TUNING.learnedMinConfidence) {
+      return { tag: label, conf: confidences[label], by: 'her training', alt: ai && ai.tag !== label ? ai : null };
+    }
   }
-  if (clipTagger.ready) return clipGuess(canvas);
-  return { tag: null, conf: 0, by: 'untagged' };
+  return ai || { tag: null, conf: 0, by: 'untagged' };
 }
 
 // --- Turning a picture or video frame into a review sample ---
@@ -855,8 +860,8 @@ async function startImport() {
   if (!featureModel || !model) { setTrainStatus('Vision models still loading…'); return false; }
   if (brain.importing) { setTrainStatus('Still working on the last import…'); return false; }
   brain.importing = true;  // pauses live detection so the import gets the phone's full attention
-  if (classifier.getNumClasses() < 2 && !clipTagger.ready && !clipTagger.failed) {
-    setTrainStatus('Loading the auto-tagger…');
+  if (!clipTagger.ready && !clipTagger.failed) {
+    setTrainStatus('Loading the AI scanner…');
     await loadClip();
   }
   return true;
@@ -883,7 +888,7 @@ photoInput.addEventListener('change', async () => {
       const bmp = await createImageBitmap(file);
       const s = await sampleFrom(bmp, bmp.width, bmp.height, true);
       bmp.close?.();
-      review.push({ thumb: s.thumb, embs: [s.emb], tag: s.tag, conf: s.conf, by: s.by, skip: false,
+      review.push({ thumb: s.thumb, embs: [s.emb], tag: s.tag, conf: s.conf, by: s.by, alt: s.alt, skip: false,
         note: s.found ? 'photo' : 'photo · no cat detected, whole picture used' });
       added++;
       renderReview();
@@ -946,7 +951,7 @@ videoInput.addEventListener('change', async () => {
       // A run ends when the tag changes or she left the frame for a while (skipped frames)
       while (j + 1 < frames.length && tags[j + 1] === tags[i] && frames[j + 1].t - frames[j].t < step * 1.5) j++;
       const run = frames.slice(i, j + 1), mid = run[Math.floor(run.length / 2)];
-      review.push({ thumb: mid.thumb, embs: run.map(f => f.emb), tag: tags[i], by: run[0].by, skip: false,
+      review.push({ thumb: mid.thumb, embs: run.map(f => f.emb), tag: tags[i], by: run[0].by, alt: mid.alt, skip: false,
         conf: run.reduce((a, f) => a + (f.tag === tags[i] ? f.conf : 0), 0) / run.length,
         note: `video ${clock(run[0].t)}–${clock(run.at(-1).t + step)} · ${run.length} frame${run.length === 1 ? '' : 's'}` });
       groups++;
@@ -976,7 +981,8 @@ function renderReview() {
     row.querySelector('.tag').textContent = item.skip ? `${item.tag || 'UNTAGGED'} (won't learn)` : item.tag || 'UNTAGGED: tap to tag';
     row.style.setProperty('--c', colorForTag(item.skip ? null : item.tag));
     const how = item.by === 'you' ? 'tagged by you' : item.tag ? `${item.by} ${Math.round(item.conf * 100)}%` : '';
-    row.querySelector('small').textContent = [how, item.note].filter(Boolean).join(' · ');
+    const alt = item.by !== 'you' && item.alt ? `AI says ${item.alt.tag} ${Math.round(item.alt.conf * 100)}%` : '';
+    row.querySelector('small').textContent = [how, alt, item.note].filter(Boolean).join(' · ');
     row.addEventListener('click', () => openPicker(i));
     reviewEl.appendChild(row);
   });
@@ -996,7 +1002,8 @@ function openPicker(i) {
   list.innerHTML = '';
   // Tags she already knows first, then the rest of the behavior list
   const known = brain.labels.map(l => BEHAVIORS.find(b => b.label === l) || { label: l, meaning: 'your tag' });
-  const options = [...known, ...BEHAVIORS.filter(b => !brain.labels.includes(b.label))];
+  let options = [...known, ...BEHAVIORS.filter(b => !brain.labels.includes(b.label))];
+  if (item.alt) options = [options.find(o => o.label === item.alt.tag), ...options.filter(o => o.label !== item.alt.tag)].filter(Boolean);
   for (const b of options) {
     const btn = document.createElement('button');
     if (b.label === item.tag) btn.className = 'current';
