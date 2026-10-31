@@ -40,6 +40,8 @@
     font-size: clamp(13px, 3.6vw, 18px); letter-spacing: .06em; text-transform: uppercase; text-shadow: 0 0 8px currentColor;
     margin-bottom: 8px; min-height: 2.6em; }
   #banner small { display: block; opacity: .7; font-size: .65em; }
+  #banner #sound { opacity: 1; font-size: .7em; margin-top: 3px; letter-spacing: .04em; }
+  #banner #sound:empty { display: none; }
   #banner #meaning { text-transform: none; letter-spacing: .02em; font-size: .7em; opacity: .85; margin-top: 3px; text-shadow: none; }
   #segments .l small { display: block; color: var(--hud); opacity: .6; font-size: 11px; }
   #player { position: relative; margin: 0 auto; background: #000; }
@@ -52,9 +54,11 @@
   #progress div { height: 100%; width: 0; background: var(--hud); box-shadow: 0 0 8px var(--hud); }
   #status { min-height: 1.5em; margin-top: 6px; color: var(--warn); font-size: 12px; }
 
-  #timeline { position: relative; height: 34px; margin-top: 10px; background: rgba(100,200,255,.08); cursor: pointer; touch-action: none; }
-  #timeline .seg { position: absolute; top: 0; bottom: 0; }
-  #playhead { position: absolute; top: -3px; bottom: -3px; width: 2px; background: #fff; box-shadow: 0 0 6px #fff; pointer-events: none; }
+  .track-label { font-size: 10px; letter-spacing: .12em; opacity: .6; margin-top: 10px; }
+  .timeline { position: relative; height: 34px; margin-top: 3px; background: rgba(100,200,255,.08); cursor: pointer; touch-action: none; }
+  .timeline.audio { height: 18px; }
+  .timeline .seg { position: absolute; top: 0; bottom: 0; }
+  .playhead { position: absolute; top: -3px; bottom: -3px; width: 2px; background: #fff; box-shadow: 0 0 6px #fff; pointer-events: none; }
   #legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 10px; font-size: 12px; }
   #legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 6px; background: var(--c); vertical-align: -1px; }
   #segments { margin-top: 12px; max-height: 40vh; overflow-y: auto; }
@@ -86,6 +90,7 @@
       </label>
       <button id="scanBtn" class="primary" disabled>▶ Tag video</button>
       <button id="cancelBtn" hidden>Stop</button>
+      <label><input type="checkbox" id="listenBox" checked> Listen for sounds</label>
     </div>
     <p class="hint" id="fileName">No video chosen. Recordings from your camera roll work.</p>
     <details>
@@ -94,11 +99,11 @@
       <textarea id="behaviors" spellcheck="false"></textarea>
       <div class="controls"><button id="resetBehaviors">Reset to defaults</button></div>
     </details>
-    <p class="hint">First scan downloads the vision models (about 160&nbsp;MB, cached after that). Everything runs on this device; the video never leaves it.</p>
+    <p class="hint">First scan downloads the vision models (about 160&nbsp;MB, cached after that). Everything runs on this device; the video never leaves it. With "Listen for sounds" on, it also picks out meows, purrs, hisses, yowls and chewing from the soundtrack.</p>
   </section>
 
   <section id="viewer" hidden>
-    <div id="banner"><small>KITTEN TACTICAL OVERLAY // VIDEO ANALYSIS</small><span id="tag">--</span><small id="meaning"></small></div>
+    <div id="banner"><small>KITTEN TACTICAL OVERLAY // VIDEO ANALYSIS</small><span id="tag">--</span><small id="meaning"></small><small id="sound"></small></div>
     <div id="player">
       <video id="video" playsinline muted preload="auto"></video>
       <canvas id="overlay"></canvas>
@@ -108,7 +113,12 @@
   </section>
 
   <section id="results" hidden>
-    <div id="timeline"><div id="playhead"></div></div>
+    <div class="track-label">VISION</div>
+    <div id="timeline" class="timeline"><div class="playhead"></div></div>
+    <div id="audioTrack">
+      <div class="track-label">SOUND</div>
+      <div id="audioTimeline" class="timeline audio"><div class="playhead"></div></div>
+    </div>
     <div id="legend"></div>
     <div class="controls" style="margin-top:12px">
       <button id="jsonBtn">Export JSON</button>
@@ -162,8 +172,24 @@ const TUNING = {
   minConfidence: 0.25,     // below this the sample is tagged UNSURE
   smoothWindow: 1,         // average with this many samples either side
   zoomSpeed: 2.0,          // body-lengths/sec between samples that forces ZOOMIES
-  alertLabels: /POUNCE|HALLOWEEN|EARS FLAT/i,
+  alertLabels: /POUNCE|HALLOWEEN|EARS FLAT|HISS/i,
+  soundThreshold: 0.15,    // YAMNet score needed to count a sound
 };
+
+// ---------------------------------------------------------------------------
+// SOUNDS: YAMNet listens to the soundtrack. `classes` are AudioSet/YAMNet class
+// ids (76 Cat, 77 Purr, 78 Meow, 79 Hiss, 80 Caterwaul, 49 Chewing).
+// First matching rule wins; `all` means every listed class must be heard at once.
+// ---------------------------------------------------------------------------
+const YAMNET_URL = 'https://tfhub.dev/google/tfjs-model/yamnet/tfjs/1';
+const SOUNDS = [
+  { label: 'HISS', classes: [79], meaning: 'Back off: defensive warning' },
+  { label: 'YOWL', classes: [80], meaning: 'Insistent yowl: open this door or refill the bowl, now' },
+  { label: 'PURR-YOWL', classes: [77, 78], all: true, meaning: 'Affectionate extortion: she loves you, and she wants it now' },
+  { label: 'MEOW', classes: [78], meaning: 'Demand: boundary expansion or resource allocation' },
+  { label: 'PURR', classes: [77], meaning: 'Content, or self-soothing' },
+  { label: 'CHEWING', classes: [49], meaning: 'Refuelling: crunch confirmed' },
+];
 
 const COLORS = ['#ff7ad9', '#ffc94a', '#7dffb0', '#b98bff', '#64fff0', '#ff9f5a', '#9fd3ff', '#d4ff6a', '#ff6a8d', '#c0a8ff'];
 const STORAGE_KEY = 'kittenTagger.behaviors.v1';
@@ -293,6 +319,67 @@ function pickCat(predictions) {
     .sort((a, b) => (b.class === 'cat') - (a.class === 'cat') || b.score - a.score)[0];
 }
 
+// ---------------------------------------------------------------------------
+// Sound: decode the soundtrack, resample to 16 kHz mono, run YAMNet
+// (one score row per 0.96 s window, every 0.48 s)
+// ---------------------------------------------------------------------------
+let yamnet = null;
+
+async function analyzeAudio(file) {
+  const ac = new (window.AudioContext || window.webkitAudioContext)();
+  let decoded;
+  try { decoded = await ac.decodeAudioData(await file.arrayBuffer()); }
+  finally { ac.close(); }
+  const off = new OfflineAudioContext(1, Math.ceil(decoded.duration * 16000), 16000);
+  const src = off.createBufferSource();
+  src.buffer = decoded;
+  src.connect(off.destination);
+  src.start();
+  const wave = (await off.startRendering()).getChannelData(0);
+
+  if (!yamnet) yamnet = await tf.loadGraphModel(YAMNET_URL, { fromTFHub: true });
+  const classIds = [...new Set(SOUNDS.flatMap(s => s.classes))];
+  const HOP = 0.48, WINDOW = 15360, CHUNK = 16000 * 60;
+  const frames = [];
+  for (let start = 0; start < wave.length; start += CHUNK) {
+    let piece = wave.subarray(start, Math.min(wave.length, start + CHUNK));
+    if (piece.length < WINDOW) { const padded = new Float32Array(WINDOW); padded.set(piece); piece = padded; }
+    const outputs = yamnet.predict(tf.tensor1d(piece));
+    const rows = tf.tidy(() => tf.gather(outputs[0], classIds, 1).arraySync());
+    tf.dispose(outputs);
+    rows.forEach((row, i) => {
+      const scores = Object.fromEntries(classIds.map((id, k) => [id, row[k]]));
+      frames.push({ t: start / 16000 + i * HOP, scores });
+    });
+  }
+  return soundSegments(frames, decoded.duration);
+}
+
+function soundSegments(frames, duration) {
+  const segments = [];
+  for (const f of frames) {
+    let hit = null;
+    for (const rule of SOUNDS) {
+      const s = rule.classes.map(id => f.scores[id]);
+      const conf = rule.all ? Math.min(...s) : Math.max(...s);
+      if (conf >= TUNING.soundThreshold) { hit = { label: rule.label, conf }; break; }
+    }
+    if (!hit) continue;
+    const last = segments.at(-1);
+    // Windows overlap by half, so each one only vouches for its middle 0.48 s
+    const start = f.t + 0.24, end = Math.min(duration, f.t + 0.72);
+    if (last && last.label === hit.label && f.t - last.lastT <= 0.48 * 1.5) {
+      last.end = end;
+      last.lastT = f.t;
+      last.confs.push(hit.conf);
+    } else {
+      segments.push({ label: hit.label, start, end, lastT: f.t, confs: [hit.conf] });
+    }
+  }
+  return segments.map(({ label, start, end, confs }) =>
+    ({ label, start, end, conf: confs.reduce((a, b) => a + b, 0) / confs.length }));
+}
+
 function seekTo(t) {
   if (video.currentTime === t && video.readyState >= 2) return Promise.resolve();
   return new Promise(resolve => {
@@ -306,10 +393,11 @@ function seekTo(t) {
 // ---------------------------------------------------------------------------
 // Scan
 // ---------------------------------------------------------------------------
-let fileUrl = null, fileName = '';
+let fileUrl = null, fileName = '', currentFile = null;
 let result = null;    // { behaviors, step, duration, samples, segments }
 let cancelled = false;
 let scanBehaviors = [];
+let scanSounds = [];
 const labelColors = new Map();
 
 fileInput.addEventListener('change', () => {
@@ -318,13 +406,16 @@ fileInput.addEventListener('change', () => {
   if (fileUrl) URL.revokeObjectURL(fileUrl);
   fileUrl = URL.createObjectURL(file);
   fileName = file.name;
+  currentFile = file;
   $('fileName').textContent = `Loaded: ${file.name}`;
   video.src = fileUrl;
   video.controls = true;
   result = null;
+  scanSounds = [];
   $('results').hidden = true;
   $('viewer').hidden = false;
   showTag(null);
+  $('sound').textContent = '';
   video.addEventListener('loadedmetadata', fitPlayer, { once: true });
   scanBtn.disabled = false;
 });
@@ -338,6 +429,7 @@ scanBtn.addEventListener('click', async () => {
   $('results').hidden = true;
   result = null;
   labelColors.clear();
+  video.muted = true;
   try { await video.play(); } catch (e) {}  // iOS won't hand over frames until the video has played once
   video.pause();
   video.controls = false;
@@ -346,6 +438,14 @@ scanBtn.addEventListener('click', async () => {
 
   try {
     await loadModels();
+    const listened = $('listenBox').checked;
+    let soundNote = '';
+    scanSounds = [];
+    if (listened) {
+      setStatus('Listening to the soundtrack…');
+      try { scanSounds = await analyzeAudio(currentFile); }
+      catch (e) { console.warn(e); soundNote = ' No usable soundtrack, so vision tags only.'; }
+    }
     setStatus('Reading behaviors…');
     const all = scanBehaviors = [...behaviors, NO_CAT];
     const textVecs = await embedPrompts(all.map(b => b.prompt));
@@ -372,13 +472,17 @@ scanBtn.addEventListener('click', async () => {
       const guess = tagSample(all, samples, samples.length - 1);
       drawOverlay(samples.at(-1), guess);
       showTag(guess, `scanning ${fmt(t)} / ${fmt(duration)}`);
+      showSound(t);
       progressEl.style.width = `${(100 * Math.min(t + step, duration)) / duration}%`;
       setStatus(`Tagging… ${samples.length} frames checked`);
     }
 
     result = buildResult(all, step, duration, samples);
-    setStatus(cancelled ? `Stopped early. Tagged the first ${fmt(samples.at(-1)?.t || 0)}.` :
-      `Done. ${result.segments.length} segments tagged. Tap the timeline or a segment to jump there.`);
+    result.listened = listened && !soundNote;
+    result.sounds = scanSounds;
+    const heard = result.listened ? ` ${result.sounds.length} sounds heard.` : '';
+    setStatus((cancelled ? `Stopped early. Tagged the first ${fmt(samples.at(-1)?.t || 0)}.` :
+      `Done. ${result.segments.length} segments tagged.${heard} Tap the timeline or a segment to jump there.`) + soundNote);
     renderResults();
   } catch (err) {
     console.error(err);
@@ -388,6 +492,7 @@ scanBtn.addEventListener('click', async () => {
     scanBtn.disabled = false;
     cancelBtn.hidden = true;
     video.controls = true;
+    video.muted = false;  // so jumping to a ♪ MEOW actually plays it
   }
 });
 
@@ -461,8 +566,15 @@ function fmt(t) {
 }
 
 function meaningFor(label) {
-  const b = (result ? result.behaviors : scanBehaviors).find(x => x.label === label);
+  const b = (result ? result.behaviors : scanBehaviors).find(x => x.label === label) || SOUNDS.find(x => x.label === label);
   return b ? b.meaning : '';
+}
+
+function showSound(t) {
+  const snd = (result ? result.sounds : scanSounds).find(s => t >= s.start && t < s.end);
+  const el = $('sound');
+  el.textContent = snd ? `♪ ${snd.label}: ${meaningFor(snd.label)}` : '';
+  el.style.color = snd ? colorFor(snd.label) : '';
 }
 
 function showTag(tag, sub) {
@@ -507,37 +619,41 @@ function drawOverlay(sample, tag) {
 function renderResults() {
   if (!result || !result.samples.length) return;
   $('results').hidden = false;
-  const tl = $('timeline');
-  tl.querySelectorAll('.seg').forEach(n => n.remove());
   const totals = {};
-  for (const seg of result.segments) {
-    const d = document.createElement('div');
-    d.className = 'seg';
-    d.style.left = `${(100 * seg.start) / result.duration}%`;
-    d.style.width = `${(100 * (seg.end - seg.start)) / result.duration}%`;
-    d.style.background = colorFor(seg.label);
-    d.title = `${seg.label} ${fmt(seg.start)}–${fmt(seg.end)}`;
-    tl.insertBefore(d, $('playhead'));
-    const tot = totals[seg.label] || (totals[seg.label] = { time: 0, count: 0 });
-    tot.time += seg.end - seg.start;
-    tot.count++;
-  }
+  const drawTrack = (tl, segments, prefix) => {
+    tl.querySelectorAll('.seg').forEach(n => n.remove());
+    for (const seg of segments) {
+      const d = document.createElement('div');
+      d.className = 'seg';
+      d.style.left = `${(100 * seg.start) / result.duration}%`;
+      d.style.width = `${(100 * (seg.end - seg.start)) / result.duration}%`;
+      d.style.background = colorFor(seg.label);
+      d.title = `${prefix}${seg.label} ${fmt(seg.start)}–${fmt(seg.end)}`;
+      tl.insertBefore(d, tl.querySelector('.playhead'));
+      const tot = totals[prefix + seg.label] || (totals[prefix + seg.label] = { label: seg.label, time: 0, count: 0 });
+      tot.time += seg.end - seg.start;
+      tot.count++;
+    }
+  };
+  drawTrack($('timeline'), result.segments, '');
+  drawTrack($('audioTimeline'), result.sounds, '♪ ');
+  $('audioTrack').hidden = !result.listened;
   $('legend').innerHTML = '';
   Object.entries(totals).sort((a, b) => b[1].time - a[1].time).forEach(([label, tot]) => {
     const span = document.createElement('span');
-    span.style.setProperty('--c', colorFor(label));
+    span.style.setProperty('--c', colorFor(tot.label));
     span.textContent = `${label} ${fmt(tot.time)} · ${tot.count}×`;
     $('legend').appendChild(span);
   });
   const list = $('segments');
   list.innerHTML = '';
-  for (const seg of result.segments) {
+  for (const seg of allSegments()) {
     if (seg.label === UNSURE) continue;
     const b = document.createElement('button');
     b.style.setProperty('--c', colorFor(seg.label));
     b.innerHTML = '<span class="t"></span><span class="l"></span><span class="p"></span>';
     b.querySelector('.t').textContent = `${fmt(seg.start)}–${fmt(seg.end)}`;
-    b.querySelector('.l').textContent = seg.label;
+    b.querySelector('.l').textContent = (seg.sound ? '♪ ' : '') + seg.label;
     if (meaningFor(seg.label)) {
       const small = document.createElement('small');
       small.textContent = meaningFor(seg.label);
@@ -549,17 +665,22 @@ function renderResults() {
   }
 }
 
-function seekFromTimeline(e) {
+// Vision segments and sound segments in one time-ordered list
+function allSegments() {
+  return [...result.segments, ...result.sounds.map(s => ({ ...s, sound: true }))].sort((a, b) => a.start - b.start);
+}
+
+function seekFromTimeline(tl, e) {
   if (!result) return;
-  const r = $('timeline').getBoundingClientRect();
+  const r = tl.getBoundingClientRect();
   video.currentTime = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * result.duration;
 }
-$('timeline').addEventListener('pointerdown', e => {
-  seekFromTimeline(e);
-  const move = ev => seekFromTimeline(ev);
+document.querySelectorAll('.timeline').forEach(tl => tl.addEventListener('pointerdown', e => {
+  seekFromTimeline(tl, e);
+  const move = ev => seekFromTimeline(tl, ev);
   window.addEventListener('pointermove', move);
   window.addEventListener('pointerup', () => window.removeEventListener('pointermove', move), { once: true });
-});
+}));
 
 // Playback: show the tag for wherever the video is
 function playbackLoop() {
@@ -569,8 +690,9 @@ function playbackLoop() {
     let nearest = result.samples[0];
     for (const s of result.samples) if (Math.abs(s.t - t) < Math.abs(nearest.t - t)) nearest = s;
     showTag(seg, null);
+    showSound(t);
     drawOverlay(nearest, seg);
-    $('playhead').style.left = `${(100 * t) / result.duration}%`;
+    document.querySelectorAll('.playhead').forEach(p => { p.style.left = `${(100 * t) / result.duration}%`; });
   }
   requestAnimationFrame(playbackLoop);
 }
@@ -598,14 +720,14 @@ $('jsonBtn').addEventListener('click', () => {
 });
 $('csvBtn').addEventListener('click', () => {
   const q = s => `"${s.replace(/"/g, '""')}"`;
-  const rows = ['start_s,end_s,label,confidence,meaning', ...result.segments.map(s =>
-    `${s.start.toFixed(2)},${s.end.toFixed(2)},${q(s.label)},${s.conf.toFixed(3)},${q(meaningFor(s.label))}`)];
+  const rows = ['track,start_s,end_s,label,confidence,meaning', ...allSegments().map(s =>
+    `${s.sound ? 'sound' : 'vision'},${s.start.toFixed(2)},${s.end.toFixed(2)},${q(s.label)},${s.conf.toFixed(3)},${q(meaningFor(s.label))}`)];
   download(`${baseName()}-tags.csv`, rows.join('\n'), 'text/csv');
 });
 $('vttBtn').addEventListener('click', () => {
   const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const cues = result.segments.filter(s => s.label !== UNSURE).map(s =>
-    `${vttTime(s.start)} --> ${vttTime(s.end)}\n${esc(s.label)}${s.label === NO_CAT.label ? '' : ` (${Math.round(s.conf * 100)}%)`}` +
+  const cues = allSegments().filter(s => s.label !== UNSURE).map(s =>
+    `${vttTime(s.start)} --> ${vttTime(s.end)}\n${s.sound ? '♪ ' : ''}${esc(s.label)}${s.label === NO_CAT.label ? '' : ` (${Math.round(s.conf * 100)}%)`}` +
     (meaningFor(s.label) ? `\n${esc(meaningFor(s.label))}` : ''));
   download(`${baseName()}.vtt`, `WEBVTT\n\n${cues.join('\n\n')}\n`, 'text/vtt');
 });
