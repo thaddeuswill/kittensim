@@ -511,14 +511,14 @@ function analyzeKittenIntent(m, now) {
   if (!stalking) track.crouchSince = 0;
   else if (!track.crouchSince) track.crouchSince = now;
 
+  // Motion alerts first (the AI only sees a still frame once a second), then the pounce warning,
+  // then the AI tag, then her model (when AI tags are off or unsure), then the shape rules
   if (m.speed > TUNING.zoomSpeed) return TRIGGERS.zoomies;
   if (tail.state === 'twitch') return TRIGGERS.tailTwitch;
   if (ear.showUntil > now) return TRIGGERS.earFlick;
-  if (brain.guess && brain.guess.conf >= TUNING.learnedMinConfidence) return learnedIntent(brain.guess.label, 'trained');
   if (track.crouchSince && now - track.crouchSince > TUNING.stalkHoldMs) return TRIGGERS.pounce;
-  if (aiTags.on && brain.ai && now - brain.ai.at < TUNING.aiStaleMs && brain.ai.conf >= TUNING.aiMinConfidence) {
-    return learnedIntent(brain.ai.tag, 'ai');
-  }
+  if (aiFresh(now)) return learnedIntent(brain.ai.tag, 'ai');
+  if (herModelTag()) return learnedIntent(herModelTag(), 'trained');
   if (tail.state === 'sweep') return TRIGGERS.tailSweep;
   if (track.stillSince && now - track.stillSince > TUNING.loafHoldMs) return TRIGGERS.loaf;
   if (m.aspect < TUNING.sentryAspect) return TRIGGERS.sentry;
@@ -544,7 +544,7 @@ function updateHUDOverlay(intent, m, fps) {
   }
   const check = auditFor(intent, performance.now());
   document.getElementById('meaningLine').textContent = [intent.meaning,
-    check ? (check.agree ? 'AI agrees ✓' : `AI thinks ${check.ai}`) : ''].filter(Boolean).join(' · ');
+    check ? (check.agree ? `${check.who} agrees ✓` : `${check.who} thinks ${check.other}`) : ''].filter(Boolean).join(' · ');
   const f = (v, d = 2) => (v == null ? '--' : v.toFixed(d));
   statsEl.textContent =
     `TGT LOCK  ${m ? 'YES' : 'NO'}\n` +
@@ -554,9 +554,9 @@ function updateHUDOverlay(intent, m, fps) {
     `ASPECT    ${f(m && m.aspect)}\n` +
     `TAIL      ${m ? `${f(tail.energy)} ${f(tail.rate, 1)}Hz ${tail.state || ''}` : '--'}\n` +
     `EARS      ${m ? `${f(ear.energy)} ${ear.flicks.length} flicks/min` : '--'}\n` +
-    (aiTags.on ? `AUDIT     ${audit.log.filter(a => a.agree).length}✓ ${audit.log.filter(a => !a.agree).length}✗ /min\n` : '') +
+    (aiTags.on ? `AUDIT     ${audit.log.filter(a => a.agree).length}✓ ${audit.log.filter(a => !a.agree).length}✗ vs AI\n` : '') +
     (classifier && classifier.getNumClasses() >= 2
-      ? `AI GUESS  ${brain.guess ? brain.guess.label.slice(0, 14) + ' ' + Math.round(brain.guess.conf * 100) + '%' : '--'}\n`
+      ? `HER MODEL ${brain.guess ? brain.guess.label.slice(0, 14) + ' ' + Math.round(brain.guess.conf * 100) + '%' : '--'}\n`
       : `BRAIN     RULES\n`) +
     (aiTags.on ? `AI TAG    ${!clipTagger.ready ? 'loading' : brain.ai ? `${brain.ai.tag.slice(0, 14)} ${Math.round(brain.ai.conf * 100)}%` : '--'}\n` : '') +
     `FPS       ${f(fps, 0)}`;
@@ -588,7 +588,8 @@ function drawFrame(m, intent) {
   ctx.fillStyle = intent.color;
   ctx.font = `${Math.round(s * 7)}px ui-monospace, monospace`;
   const check = auditFor(intent, performance.now());
-  const onBox = (intent.short || 'KITTEN') + (check ? (check.agree ? ' ✓' : ` ✗ AI: ${check.ai}`) : '');
+  const onBox = (intent.short || 'KITTEN') +
+    (!check ? '' : check.agree ? ' ✓' : check.who === 'AI' ? ` ✗ AI: ${check.other}` : '');
   // The camera image is scaled down to fit the screen, so size the tag to read at about 13 px there
   const shown = canvas.getBoundingClientRect().width || canvas.width;
   const px = Math.round(13 * canvas.width / shown);
@@ -722,7 +723,7 @@ function learnedIntent(label, source) {
     const i = taught >= 0 ? taught : brain.labels.length + Math.max(0, BEHAVIORS.findIndex(b => b.label === label));
     const behavior = BEHAVIORS.find(b => b.label === label);
     brain.intents[key] = {
-      text: TUNING.hudText[label] || `AI: ${label}`,
+      text: TUNING.hudText[label] || `${source === 'ai' ? 'AI' : 'LEARNED'}: ${label}`,
       meaning: behavior ? behavior.meaning : '',
       color: TUNING.alertLabels.test(label) ? '#ff4a4a' : LEARNED_COLORS[i % LEARNED_COLORS.length],
       alert: TUNING.alertLabels.test(label),
@@ -738,25 +739,36 @@ function learnedIntent(label, source) {
 // ---------------------------------------------------------------------------
 const audit = { log: [], lastCapture: 0 };
 
+const isBuiltIn = tag => BEHAVIORS.some(b => b.label === tag);
+const aiFresh = now => aiTags.on && brain.ai && now - brain.ai.at < TUNING.aiStaleMs && brain.ai.conf >= TUNING.aiMinConfidence;
+const herModelTag = () => (brain.guess && brain.guess.conf >= TUNING.learnedMinConfidence ? brain.guess.label : null);
+
+// Second opinion on the tag showing: the AI checks her model and the rules; her model checks the AI.
+// Your own tags are never marked wrong, since the AI doesn't know them.
 function auditFor(intent, now) {
-  if (!aiTags.on || !intent || !intent.tag || intent.source === 'ai') return null;
-  if (!brain.ai || now - brain.ai.at > TUNING.aiStaleMs) return null;
-  return brain.ai.tag === intent.tag ? { agree: true } : { agree: false, ai: brain.ai.tag };
+  if (!intent || !intent.tag || !aiFresh(now)) return null;
+  if (intent.source === 'ai') {
+    const mine = herModelTag();
+    return mine ? { agree: mine === intent.tag, other: mine, who: 'her model' } : null;
+  }
+  if (!isBuiltIn(intent.tag)) return null;
+  return { agree: brain.ai.tag === intent.tag, other: brain.ai.tag, who: 'AI' };
 }
 
+// Each AI result scores her model against the AI; disagreements go to Teach to settle
 function recordAudit(ai, snapshot, now) {
-  const shown = lastIntent;
-  if (!shown || !shown.tag || shown.source === 'ai') return;
-  const agree = shown.tag === ai.tag;
+  const mine = herModelTag();
+  if (!mine || !isBuiltIn(mine)) return;
+  const agree = mine === ai.tag;
   audit.log.push({ t: now, agree });
   audit.log = audit.log.filter(a => now - a.t < 60000);
-  if (agree || shown.source !== 'trained' || !snapshot) return;
+  if (agree || !snapshot) return;
   if (now - audit.lastCapture < TUNING.auditCaptureEveryMs) return;
   if (review.filter(r => r.audit).length >= TUNING.auditMaxPending) return;
   audit.lastCapture = now;
   // Comes in untagged on purpose: one tap on "Learn these" can't reinforce a wrong guess
   review.push({ thumb: snapshot.thumb, embs: [snapshot.emb], tag: null, by: 'untagged', skip: false, audit: true,
-    alt: ai, alt2: { tag: shown.tag }, note: `live check: her training said ${shown.tag}, AI says ${ai.tag}` });
+    alt: ai, alt2: { tag: mine }, note: `live check: her model said ${mine}, AI says ${ai.tag}` });
   updateTeachBadge();
   if (!trainEl.hidden) renderReview();
 }
