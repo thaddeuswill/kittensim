@@ -147,14 +147,15 @@
 // Thresholds are relative to the cat's own size, so they work at any distance.
 // ---------------------------------------------------------------------------
 const TRIGGERS = {
-  pounce: { text: 'WARNING: REAR-END CALIBRATION (POUNCE IMMINENT)', color: '#ff4a4a', alert: true },
-  zoomies: { text: 'ALERT: ZOOMIES PROTOCOL ENGAGED', color: '#ffc94a', alert: true },
-  tailTwitch: { text: 'WARNING: RAPID TAIL-TIP TWITCH // SENSORY OVERLOAD', color: '#ff8a3d', alert: true },
-  earFlick: { text: 'IRRITATION SPIKE // EAR FLICK', color: '#ffe14a', alert: true },
-  tailSweep: { text: 'Status: Low tail sweep // Calculating attack vector', color: '#ffc94a' },
-  sentry: { text: 'Status: Sentry mode / Judging you', color: '#b98bff' },
-  loaf: { text: 'Status: Loaf configuration achieved. Do not disturb.', color: '#7dffb0' },
-  idle: { text: 'Status: Idle / Plotting minor chaos', color: '#64c8ff' },
+  // short: the tag drawn on her box; tag: the behavior AI tags can audit it against
+  pounce: { text: 'WARNING: REAR-END CALIBRATION (POUNCE IMMINENT)', color: '#ff4a4a', alert: true, short: 'POUNCE PREP', tag: 'POUNCE PREP' },
+  zoomies: { text: 'ALERT: ZOOMIES PROTOCOL ENGAGED', color: '#ffc94a', alert: true, short: 'ZOOMIES', tag: 'ZOOMIES' },
+  tailTwitch: { text: 'WARNING: RAPID TAIL-TIP TWITCH // SENSORY OVERLOAD', color: '#ff8a3d', alert: true, short: 'TAIL TWITCH' },
+  earFlick: { text: 'IRRITATION SPIKE // EAR FLICK', color: '#ffe14a', alert: true, short: 'EAR FLICK' },
+  tailSweep: { text: 'Status: Low tail sweep // Calculating attack vector', color: '#ffc94a', short: 'TAIL SWEEP' },
+  sentry: { text: 'Status: Sentry mode / Judging you', color: '#b98bff', short: 'SENTRY' },
+  loaf: { text: 'Status: Loaf configuration achieved. Do not disturb.', color: '#7dffb0', short: 'LOAF', tag: 'LOAF' },
+  idle: { text: 'Status: Idle / Plotting minor chaos', color: '#64c8ff', short: 'IDLE' },
   lost: { text: 'TARGET LOST: Check under the couch', color: '#8899aa' },
   scanning: { text: 'Observing room status...', color: '#64c8ff' },
 };
@@ -209,6 +210,8 @@ const TUNING = {
   aiTagEveryMs: 1000,             // live AI tags: how often CLIP looks at her (it's the slow part)
   aiMinConfidence: 0.3,           // CLIP's share among all 21 behaviors needed to show its tag
   aiStaleMs: 2500,                // drop a live AI tag this long after it was made
+  auditCaptureEveryMs: 5000,      // at most one disagreement saved to Teach this often
+  auditMaxPending: 30,            // stop saving disagreements once this many are waiting
   featureModelUrl: 'https://storage.googleapis.com/tfjs-models/tfjs/mobilenet_v1_0.50_224/model.json',
 };
 
@@ -480,9 +483,13 @@ function tailStep(now) {
 
 function tailLoop() {
   const now = performance.now();
-  tailStep(now);
-  tailSettle(now);
-  earSettle(now);
+  try {
+    tailStep(now);
+    tailSettle(now);
+    earSettle(now);
+  } catch (e) {
+    console.error(e);  // keep tracking on the next frame
+  }
   requestAnimationFrame(tailLoop);
 }
 
@@ -507,10 +514,10 @@ function analyzeKittenIntent(m, now) {
   if (m.speed > TUNING.zoomSpeed) return TRIGGERS.zoomies;
   if (tail.state === 'twitch') return TRIGGERS.tailTwitch;
   if (ear.showUntil > now) return TRIGGERS.earFlick;
-  if (brain.guess && brain.guess.conf >= TUNING.learnedMinConfidence) return learnedIntent(brain.guess.label);
+  if (brain.guess && brain.guess.conf >= TUNING.learnedMinConfidence) return learnedIntent(brain.guess.label, 'trained');
   if (track.crouchSince && now - track.crouchSince > TUNING.stalkHoldMs) return TRIGGERS.pounce;
   if (aiTags.on && brain.ai && now - brain.ai.at < TUNING.aiStaleMs && brain.ai.conf >= TUNING.aiMinConfidence) {
-    return learnedIntent(brain.ai.tag);
+    return learnedIntent(brain.ai.tag, 'ai');
   }
   if (tail.state === 'sweep') return TRIGGERS.tailSweep;
   if (track.stillSince && now - track.stillSince > TUNING.loafHoldMs) return TRIGGERS.loaf;
@@ -529,12 +536,15 @@ let lastIntent = null;
 function updateHUDOverlay(intent, m, fps) {
   if (intent !== lastIntent) {
     intentEl.textContent = intent.text;
-    document.getElementById('meaningLine').textContent = intent.meaning || '';
+
     bannerEl.style.color = intent.color;
     document.body.classList.toggle('alert', !!intent.alert);
     if (intent.alert) beep(intent === TRIGGERS.pounce ? 880 : 520);
     lastIntent = intent;
   }
+  const check = auditFor(intent, performance.now());
+  document.getElementById('meaningLine').textContent = [intent.meaning,
+    check ? (check.agree ? 'AI agrees ✓' : `AI thinks ${check.ai}`) : ''].filter(Boolean).join(' · ');
   const f = (v, d = 2) => (v == null ? '--' : v.toFixed(d));
   statsEl.textContent =
     `TGT LOCK  ${m ? 'YES' : 'NO'}\n` +
@@ -544,6 +554,7 @@ function updateHUDOverlay(intent, m, fps) {
     `ASPECT    ${f(m && m.aspect)}\n` +
     `TAIL      ${m ? `${f(tail.energy)} ${f(tail.rate, 1)}Hz ${tail.state || ''}` : '--'}\n` +
     `EARS      ${m ? `${f(ear.energy)} ${ear.flicks.length} flicks/min` : '--'}\n` +
+    (aiTags.on ? `AUDIT     ${audit.log.filter(a => a.agree).length}✓ ${audit.log.filter(a => !a.agree).length}✗ /min\n` : '') +
     (classifier && classifier.getNumClasses() >= 2
       ? `AI GUESS  ${brain.guess ? brain.guess.label.slice(0, 14) + ' ' + Math.round(brain.guess.conf * 100) + '%' : '--'}\n`
       : `BRAIN     RULES\n`) +
@@ -576,7 +587,18 @@ function drawFrame(m, intent) {
 
   ctx.fillStyle = intent.color;
   ctx.font = `${Math.round(s * 7)}px ui-monospace, monospace`;
-  ctx.fillText(`KITTEN // ${Math.round(m.score * 100)}%`, x, Math.max(s * 8, y - s * 4));
+  const check = auditFor(intent, performance.now());
+  const onBox = (intent.short || 'KITTEN') + (check ? (check.agree ? ' ✓' : ` ✗ AI: ${check.ai}`) : '');
+  // The camera image is scaled down to fit the screen, so size the tag to read at about 13 px there
+  const shown = canvas.getBoundingClientRect().width || canvas.width;
+  const px = Math.round(13 * canvas.width / shown);
+  ctx.font = `bold ${px}px ui-monospace, monospace`;
+  const ty = Math.max(px * 1.4, y - px * 0.5), tw = ctx.measureText(onBox).width;
+  ctx.fillStyle = 'rgba(5,8,12,.75)';
+  ctx.fillRect(x - px * 0.3, ty - px * 1.1, tw + px * 0.6, px * 1.45);
+  ctx.fillStyle = intent.color;
+  ctx.fillText(onBox, x, ty);
+  ctx.font = `${Math.round(s * 7)}px ui-monospace, monospace`;
 
   // Tail zone marker: the busiest edge cell while her body is still
   if (tail.hotCell && tail.energy > TUNING.tailMoving) {
@@ -656,18 +678,29 @@ async function brainStep(box, now) {
   if (aiTags.on && clipTagger.ready && !aiTags.busy && now - aiTags.last >= TUNING.aiTagEveryMs) {
     aiTags.busy = true;
     aiTags.last = now;
+    // Snapshot for the audit (only needed when her training is in play)
+    let snapshot = null;
+    if (classifier.getNumClasses() >= 2) {
+      thumbCanvas.getContext('2d').drawImage(crop, 0, 0, 112, 112);
+      snapshot = { emb: emb.dataSync().slice(), thumb: thumbCanvas.toDataURL('image/jpeg', 0.7) };
+    }
     // Not awaited: CLIP is slow, and it copies `crop` before the next embedCat redraws it
-    clipGuess(crop).then(g => { brain.ai = { ...g, at: performance.now() }; })
-      .catch(() => {}).finally(() => { aiTags.busy = false; });
+    clipGuess(crop).then(g => {
+      brain.ai = { ...g, at: performance.now() };
+      recordAudit(g, snapshot, performance.now());
+    }).catch(() => {}).finally(() => { aiTags.busy = false; });
   }
   try {
     if (classifier.getNumClasses() >= 2) {
+      const version = brain.version;
       const { confidences } = await knnPredict(emb);
+      // Her training changed (learn, forget, wipe, import) while this guess was being made
+      if (version !== brain.version) return;
       for (const label of Object.keys(confidences)) {
         brain.conf[label] = 0.6 * (brain.conf[label] || 0) + 0.4 * confidences[label];
       }
-      const [label, conf] = Object.entries(brain.conf).sort((a, b) => b[1] - a[1])[0];
-      brain.guess = { label, conf };
+      const best = Object.entries(brain.conf).sort((a, b) => b[1] - a[1])[0];
+      brain.guess = best ? { label: best[0], conf: best[1] } : null;
     }
   } finally {
     emb.dispose();
@@ -675,24 +708,57 @@ async function brainStep(box, now) {
 }
 
 function forgetGuess() {
+  brain.version = (brain.version || 0) + 1;
   brain.conf = {};
   brain.guess = null;
   brain.ai = null;
 }
 
-function learnedIntent(label) {
-  if (!brain.intents[label]) {
+// source: 'trained' (her training, which AI tags audit) or 'ai' (AI tags itself)
+function learnedIntent(label, source) {
+  const key = `${source}:${label}`;
+  if (!brain.intents[key]) {
     const taught = brain.labels.indexOf(label);
     const i = taught >= 0 ? taught : brain.labels.length + Math.max(0, BEHAVIORS.findIndex(b => b.label === label));
     const behavior = BEHAVIORS.find(b => b.label === label);
-    brain.intents[label] = {
+    brain.intents[key] = {
       text: TUNING.hudText[label] || `AI: ${label}`,
       meaning: behavior ? behavior.meaning : '',
       color: TUNING.alertLabels.test(label) ? '#ff4a4a' : LEARNED_COLORS[i % LEARNED_COLORS.length],
       alert: TUNING.alertLabels.test(label),
+      short: label, tag: label, source,
     };
   }
-  return brain.intents[label];
+  return brain.intents[key];
+}
+
+// ---------------------------------------------------------------------------
+// Audit: AI tags double-check whatever tag is showing (from her training or a rule).
+// Disagreements with her training are saved to Teach for you to settle.
+// ---------------------------------------------------------------------------
+const audit = { log: [], lastCapture: 0 };
+
+function auditFor(intent, now) {
+  if (!aiTags.on || !intent || !intent.tag || intent.source === 'ai') return null;
+  if (!brain.ai || now - brain.ai.at > TUNING.aiStaleMs) return null;
+  return brain.ai.tag === intent.tag ? { agree: true } : { agree: false, ai: brain.ai.tag };
+}
+
+function recordAudit(ai, snapshot, now) {
+  const shown = lastIntent;
+  if (!shown || !shown.tag || shown.source === 'ai') return;
+  const agree = shown.tag === ai.tag;
+  audit.log.push({ t: now, agree });
+  audit.log = audit.log.filter(a => now - a.t < 60000);
+  if (agree || shown.source !== 'trained' || !snapshot) return;
+  if (now - audit.lastCapture < TUNING.auditCaptureEveryMs) return;
+  if (review.filter(r => r.audit).length >= TUNING.auditMaxPending) return;
+  audit.lastCapture = now;
+  // Comes in untagged on purpose: one tap on "Learn these" can't reinforce a wrong guess
+  review.push({ thumb: snapshot.thumb, embs: [snapshot.emb], tag: null, by: 'untagged', skip: false, audit: true,
+    alt: ai, alt2: { tag: shown.tag }, note: `live check: her training said ${shown.tag}, AI says ${ai.tag}` });
+  updateTeachBadge();
+  if (!trainEl.hidden) renderReview();
 }
 
 // --- Persistence (localStorage + JSON export/import) ---
@@ -971,6 +1037,10 @@ videoInput.addEventListener('change', async () => {
 });
 
 // --- Review list ---
+function updateTeachBadge() {
+  document.getElementById('trainBtn').textContent = review.length ? `Teach (${review.length})` : 'Teach';
+}
+
 function renderReview() {
   reviewEl.innerHTML = '';
   review.forEach((item, i) => {
@@ -981,7 +1051,7 @@ function renderReview() {
     row.querySelector('.tag').textContent = item.skip ? `${item.tag || 'UNTAGGED'} (won't learn)` : item.tag || 'UNTAGGED: tap to tag';
     row.style.setProperty('--c', colorForTag(item.skip ? null : item.tag));
     const how = item.by === 'you' ? 'tagged by you' : item.tag ? `${item.by} ${Math.round(item.conf * 100)}%` : '';
-    const alt = item.by !== 'you' && item.alt ? `AI says ${item.alt.tag} ${Math.round(item.alt.conf * 100)}%` : '';
+    const alt = item.by !== 'you' && !item.audit && item.alt ? `AI says ${item.alt.tag} ${Math.round(item.alt.conf * 100)}%` : '';
     row.querySelector('small').textContent = [how, alt, item.note].filter(Boolean).join(' · ');
     row.addEventListener('click', () => openPicker(i));
     reviewEl.appendChild(row);
@@ -989,6 +1059,7 @@ function renderReview() {
   document.getElementById('reviewFoot').hidden = !review.length;
   const n = review.filter(r => !r.skip && r.tag).reduce((a, r) => a + r.embs.length, 0);
   document.getElementById('learnBtn').textContent = `✓ Learn these (${n})`;
+  updateTeachBadge();
   renderLearned();
 }
 
@@ -1003,7 +1074,9 @@ function openPicker(i) {
   // Tags she already knows first, then the rest of the behavior list
   const known = brain.labels.map(l => BEHAVIORS.find(b => b.label === l) || { label: l, meaning: 'your tag' });
   let options = [...known, ...BEHAVIORS.filter(b => !brain.labels.includes(b.label))];
-  if (item.alt) options = [options.find(o => o.label === item.alt.tag), ...options.filter(o => o.label !== item.alt.tag)].filter(Boolean);
+  // The AI's guess (and, for audit items, what her training said) go first
+  const first = [item.alt, item.alt2].filter(Boolean).map(a => a.tag);
+  if (first.length) options = [...first.map(t => options.find(o => o.label === t)), ...options.filter(o => !first.includes(o.label))].filter(Boolean);
   for (const b of options) {
     const btn = document.createElement('button');
     if (b.label === item.tag) btn.className = 'current';
@@ -1152,6 +1225,15 @@ let frames = 0, fps = 0, fpsT = performance.now();
 let lastDetect = 0;
 
 async function detectLoop() {
+  try {
+    await detectFrame();
+  } catch (e) {
+    console.error(e);  // one bad frame must not freeze the HUD
+  }
+  requestAnimationFrame(detectLoop);
+}
+
+async function detectFrame() {
   const now = performance.now();
   if (!brain.importing && video.readyState >= 2 && now - lastDetect >= TUNING.detectEveryMs) {
     lastDetect = now;
@@ -1168,7 +1250,6 @@ async function detectLoop() {
   frames++;
   if (now - fpsT > 1000) { fps = frames * 1000 / (now - fpsT); frames = 0; fpsT = now; }
   updateHUDOverlay(intent, m, fps);
-  requestAnimationFrame(detectLoop);
 }
 
 document.getElementById('startBtn').addEventListener('click', async () => {
