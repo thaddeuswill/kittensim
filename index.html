@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Kitten Sim</title>
+<style>
+  :root { --hud: #64c8ff; --bg: #05080c; }
+  html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--hud);
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  main { min-height: 100vh; display: flex; flex-direction: column; gap: 18px; align-items: center; justify-content: center;
+    padding: 16px; text-align: center; box-sizing: border-box; }
+  h1 { margin: 0; font-size: clamp(22px, 7vw, 40px); letter-spacing: .12em; text-shadow: 0 0 12px var(--hud); }
+  a { display: block; width: min(320px, 100%); box-sizing: border-box; padding: 14px; border: 1px solid var(--hud);
+    color: var(--hud); text-decoration: none; letter-spacing: .08em; text-transform: uppercase; }
+  a:active { background: var(--hud); color: var(--bg); }
+  p { margin: -10px 0 0; opacity: .65; font-size: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>KITTEN SIM</h1>
+  <a href="cat_hud.html">▶ Live HUD</a>
+  <p>Point the camera at the kitten</p>
+  <a href="cat_tagger.html">▶ Tag a video</a>
+  <p>Tag behaviors in a recorded clip</p>
+</main>
+</body>
+</html>
